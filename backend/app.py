@@ -37,9 +37,10 @@ logger.info("CORS enabled for all origins")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MODELS_DIR = os.path.join(ROOT, "models")
 
-# Model registry: scan MODELS_DIR and load any folder containing model.onnx
+# Model registry: store loaded models (lazy loading)
 MODELS = {}
 DEFAULT_MODEL_ID = None
+AVAILABLE_MODEL_IDS = []  # List of model folders without loading them
 
 # Human-friendly names for known folders (override folder name or metadata)
 MODEL_DISPLAY_MAP = {
@@ -55,110 +56,103 @@ def safe_int(x):
     except Exception:
         return None
 
-def load_models():
-    global DEFAULT_MODEL_ID
-    logger.info(f"Loading models from: {MODELS_DIR}")
+def discover_models():
+    """Scan MODELS_DIR and list available models WITHOUT loading them (lazy loading)"""
+    global DEFAULT_MODEL_ID, AVAILABLE_MODEL_IDS
+    logger.info(f"Scanning models directory: {MODELS_DIR}")
+    AVAILABLE_MODEL_IDS = []
     
     if not os.path.exists(MODELS_DIR):
         logger.warning(f"Models directory does not exist: {MODELS_DIR}")
-        # fallback: look for model.onnx in repo root (legacy)
-        legacy_model = os.path.join(ROOT, "model.onnx")
-        if os.path.exists(legacy_model):
-            logger.info(f"Found legacy model at {legacy_model}")
-            sid = "model_1"
-            sess = ort.InferenceSession(legacy_model, providers=["CPUExecutionProvider"])
-            meta = sess.get_inputs()[0]
-            shape = meta.shape
-            H = safe_int(shape[2]) or 224
-            W = safe_int(shape[3]) or 224
-            MODELS[sid] = {
-                "id": sid,
-                "name": sid,
-                "framework": "onnx",
-                "session": sess,
-                "input_name": meta.name,
-                "input_shape": (H, W),
-                "labels": [],
-            }
-            DEFAULT_MODEL_ID = sid
-        else:
-            logger.warning("No models found anywhere!")
         return
 
     for entry in sorted(os.listdir(MODELS_DIR)):
         model_folder = os.path.join(MODELS_DIR, entry)
         if not os.path.isdir(model_folder):
             continue
-        # prefer model.onnx
         onnx_path = os.path.join(model_folder, "model.onnx")
-        if not os.path.exists(onnx_path):
-            logger.debug(f"No model.onnx found in {model_folder}")
-            continue
-        try:
-            logger.info(f"Loading model: {entry}")
-            sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-            meta = sess.get_inputs()[0]
-            shape = meta.shape
-            H = safe_int(shape[2]) or 224
-            W = safe_int(shape[3]) or 224
-            # load labels from config.json or config_base.json if present
-            labels = []
-            for cfg_name in ("config.json", "config_base.json"):
-                cfg_path = os.path.join(model_folder, cfg_name)
-                if os.path.exists(cfg_path):
-                    try:
-                        with open(cfg_path, "r", encoding="utf-8") as f:
-                            cfg = json.load(f)
-                        if isinstance(cfg.get("labels"), list):
-                            labels = cfg.get("labels")
-                            break
-                        if isinstance(cfg.get("classes"), list):
-                            labels = cfg.get("classes")
-                            break
-                    except Exception:
-                        labels = []
-
-            # display name from metadata.json optional
-            display_name = entry
-            metadata_path = os.path.join(model_folder, "metadata.json")
-            if os.path.exists(metadata_path):
-                try:
-                    with open(metadata_path, "r", encoding="utf-8") as f:
-                        md = json.load(f)
-                        display_name = md.get("name") or display_name
-                except Exception:
-                    pass
-            
-            # override with our friendly names when available
-            display_name = MODEL_DISPLAY_MAP.get(entry, display_name)
-
-            MODELS[entry] = {
-                "id": entry,
-                "name": display_name,
-                "framework": "onnx",
-                "session": sess,
-                "input_name": meta.name,
-                "input_shape": (H, W),
-                "labels": labels,
-            }
-            logger.info(f"✓ Loaded model: {entry} ({display_name})")
+        if os.path.exists(onnx_path):
+            AVAILABLE_MODEL_IDS.append(entry)
             if DEFAULT_MODEL_ID is None:
                 DEFAULT_MODEL_ID = entry
-        except Exception as e:
-            # skip invalid model but keep going
-            logger.error(f"✗ Failed to load model at {onnx_path}: {e}")
     
-    logger.info(f"Total models loaded: {len(MODELS)}")
-    logger.info(f"Default model: {DEFAULT_MODEL_ID}")
+    logger.info(f"✓ Found {len(AVAILABLE_MODEL_IDS)} available models: {AVAILABLE_MODEL_IDS}")
+    logger.info(f"Default model will be: {DEFAULT_MODEL_ID}")
+
+def load_single_model(model_id: str):
+    """Load a single model on-demand (lazy loading)"""
+    if model_id in MODELS:
+        return MODELS[model_id]  # Already loaded
+    
+    if model_id not in AVAILABLE_MODEL_IDS:
+        logger.error(f"Model {model_id} not found in available models")
+        return None
+    
+    model_folder = os.path.join(MODELS_DIR, model_id)
+    onnx_path = os.path.join(model_folder, "model.onnx")
+    
+    try:
+        logger.info(f"Loading model on-demand: {model_id}")
+        sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        meta = sess.get_inputs()[0]
+        shape = meta.shape
+        H = safe_int(shape[2]) or 224
+        W = safe_int(shape[3]) or 224
+        
+        # load labels from config.json or config_base.json if present
+        labels = []
+        for cfg_name in ("config.json", "config_base.json"):
+            cfg_path = os.path.join(model_folder, cfg_name)
+            if os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                    if isinstance(cfg.get("labels"), list):
+                        labels = cfg.get("labels")
+                        break
+                    if isinstance(cfg.get("classes"), list):
+                        labels = cfg.get("classes")
+                        break
+                except Exception:
+                    labels = []
+
+        # display name from metadata.json optional
+        display_name = model_id
+        metadata_path = os.path.join(model_folder, "metadata.json")
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    md = json.load(f)
+                    display_name = md.get("name") or display_name
+            except Exception:
+                pass
+        
+        # override with our friendly names when available
+        display_name = MODEL_DISPLAY_MAP.get(model_id, display_name)
+
+        MODELS[model_id] = {
+            "id": model_id,
+            "name": display_name,
+            "framework": "onnx",
+            "session": sess,
+            "input_name": meta.name,
+            "input_shape": (H, W),
+            "labels": labels,
+        }
+        logger.info(f"✓ Loaded model: {model_id} ({display_name})")
+        return MODELS[model_id]
+    except Exception as e:
+        logger.error(f"✗ Failed to load model {model_id}: {e}")
+        return None
 
 
-# load models at startup
+# Discover available models at startup (without loading them)
 try:
-    load_models()
-    logger.info("✓ Models loaded successfully")
+    discover_models()
+    logger.info("✓ Model discovery successful (lazy loading enabled)")
 except Exception as e:
-    logger.error(f"✗ Failed to load models: {e}")
-    logger.error("Application will run but predictions may fail")
+    logger.error(f"✗ Failed to discover models: {e}")
+    logger.error("Application will run but model loading may fail")
 
 @app.on_event("startup")
 async def startup_event():
@@ -169,6 +163,7 @@ def health_check():
     """Health check endpoint"""
     return {
         "status": "ok",
+        "models_available": len(AVAILABLE_MODEL_IDS),
         "models_loaded": len(MODELS),
         "default_model": DEFAULT_MODEL_ID
     }
@@ -190,8 +185,9 @@ def debug_info():
         "models_dir": MODELS_DIR,
         "models_dir_exists": models_dir_exists,
         "models_dir_contents": models_dir_contents,
-        "models_loaded": len(MODELS),
-        "models": {mid: {"name": m.get("name"), "labels": len(m.get("labels", []))} for mid, m in MODELS.items()},
+        "available_models": AVAILABLE_MODEL_IDS,
+        "models_currently_loaded": len(MODELS),
+        "models_loaded_details": {mid: {"name": m.get("name"), "labels": len(m.get("labels", []))} for mid, m in MODELS.items()},
         "default_model": DEFAULT_MODEL_ID
     }
 
@@ -229,7 +225,11 @@ def favicon():
 
 @app.get("/models")
 def list_models():
-    # Return list of available models with basic info (no session objects)
+    # Return list of available models with basic info
+    # Load default model if not already loaded to avoid empty list
+    if DEFAULT_MODEL_ID and DEFAULT_MODEL_ID not in MODELS:
+        load_single_model(DEFAULT_MODEL_ID)
+    
     out = []
     for mid, m in MODELS.items():
         out.append({
@@ -239,7 +239,7 @@ def list_models():
             "num_labels": len(m.get("labels", [])),
             "labels": m.get("labels", []),
         })
-    return {"models": out, "default": DEFAULT_MODEL_ID}
+    return {"models": out, "default": DEFAULT_MODEL_ID, "available": AVAILABLE_MODEL_IDS}
 
 
 @app.post("/predict")
@@ -249,10 +249,18 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
         image = Image.open(io.BytesIO(content))
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": "Invalid image file", "detail": str(e)})
+    
     # choose model
     chosen = model_id or DEFAULT_MODEL_ID
-    if not chosen or chosen not in MODELS:
-        return JSONResponse(status_code=400, content={"error": "Invalid or missing model_id", "available_models": list(MODELS.keys())})
+    if not chosen or chosen not in AVAILABLE_MODEL_IDS:
+        return JSONResponse(status_code=400, content={"error": "Invalid or missing model_id", "available_models": AVAILABLE_MODEL_IDS})
+
+    # Load model on-demand if not already loaded
+    if chosen not in MODELS:
+        load_single_model(chosen)
+    
+    if chosen not in MODELS:
+        return JSONResponse(status_code=500, content={"error": f"Failed to load model {chosen}"})
 
     model = MODELS[chosen]
     H, W = model.get("input_shape", (224, 224))
