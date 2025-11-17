@@ -68,57 +68,10 @@ def download_models(download_url):
         file_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
         logger.info(f"Downloaded to {tmp_path} ({file_size_mb:.1f} MB)")
         
-        # Crear directorio de extracción temporal
-        extract_temp = Path(tempfile.gettempdir()) / "models_extract"
-        if extract_temp.exists():
-            shutil.rmtree(extract_temp)
-        extract_temp.mkdir(parents=True)
-        
-        # Extraer TODO
-        logger.info(f"Extracting ZIP to temporary directory: {extract_temp}")
-        with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_temp)
-        
-        # Listar contenido extraído
-        logger.info(f"Contents extracted:")
-        all_files = []
-        for item in sorted(extract_temp.rglob("*")):
-            rel_path = str(item.relative_to(extract_temp)).replace("\\", "/")
-            all_files.append(rel_path)
-            if item.is_file():
-                logger.info(f"  FILE: {rel_path}")
-            else:
-                logger.info(f"  DIR:  {rel_path}")
-        
-        # Buscar carpeta "models" (manejar backslashes de Windows)
-        models_source = extract_temp / "models"
-        
-        # Si no existe con forward slash, buscar en los archivos extraídos
-        if not models_source.exists():
-            logger.warning(f"Models folder not found at {models_source}, searching in extracted files...")
-            # Buscar cualquier archivo que tenga "model_1/model.onnx" o "model_1\model.onnx"
-            for fpath in all_files:
-                if "model_1" in fpath and "model.onnx" in fpath:
-                    # Encontramos model_1, buscar su padre
-                    parts = fpath.replace("\\", "/").split("/")
-                    if "models" in parts:
-                        models_idx = parts.index("models")
-                        models_source = extract_temp / "models"
-                        logger.info(f"Found models structure, using: {models_source}")
-                        break
-        
-        if not models_source.exists():
-            logger.error(f"Models folder not found at {models_source}")
-            logger.error("Available directories:")
-            for item in sorted(extract_temp.iterdir()):
-                logger.error(f"  {item.name}")
-            return False
-        
-        # Copiar todos los archivos de modelos
-        logger.info(f"Copying models from {models_source} to {MODELS_DIR}")
+        # Preparar directorio de modelos
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Limpiar MODELS_DIR primero
+        # Limpiar MODELS_DIR primero (excepto .gitkeep)
         for item in MODELS_DIR.iterdir():
             if item.name != ".gitkeep":
                 if item.is_dir():
@@ -126,26 +79,59 @@ def download_models(download_url):
                 else:
                     item.unlink()
         
-        # Copiar carpetas de modelos
+        # Extraer directamente del ZIP
+        logger.info(f"Extracting models from ZIP")
         copy_count = 0
-        for model_folder in sorted(models_source.iterdir()):
-            if model_folder.is_dir():
-                dest = MODELS_DIR / model_folder.name
-                shutil.copytree(model_folder, dest)
-                logger.info(f"  ✓ Copied {model_folder.name}")
-                copy_count += 1
+        
+        with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
+            # Listar todos los archivos en el ZIP
+            logger.info("Contents in ZIP:")
+            for file_info in sorted(zip_ref.namelist()):
+                logger.info(f"  {file_info}")
+            
+            # Extraer archivos que estén en carpetas model_N
+            for file_info in zip_ref.namelist():
+                # Normalizar path a forward slashes
+                norm_path = file_info.replace("\\", "/")
+                
+                # Buscar archivos en model_X carpetas
+                # Path puede ser: "models/model_1/..." o "model_1/..."
+                parts = norm_path.split("/")
+                
+                # Encontrar si hay un "model_X" en la ruta
+                model_dir = None
+                for part in parts:
+                    if part.startswith("model_") and part[6:].isdigit():
+                        model_dir = part
+                        break
+                
+                if model_dir:
+                    # Extraer el archivo
+                    dest_path = MODELS_DIR / model_dir / "/".join(parts[parts.index(model_dir)+1:])
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Si es un archivo, extraer
+                    if not file_info.endswith("/"):
+                        with zip_ref.open(file_info) as source:
+                            with open(dest_path, "wb") as target:
+                                target.write(source.read())
+                        logger.info(f"  Extracted: {dest_path.relative_to(MODELS_DIR.parent)}")
+        
+        # Contar modelos extraídos
+        for item in MODELS_DIR.iterdir():
+            if item.is_dir() and item.name.startswith("model_"):
+                onnx_file = item / "model.onnx"
+                if onnx_file.exists():
+                    copy_count += 1
+                    logger.info(f"  ✓ Model found: {item.name}")
         
         if copy_count == 0:
-            logger.error("No model folders found to copy")
-            logger.error(f"Contents of {models_source}:")
-            for item in models_source.iterdir():
-                logger.error(f"  {item.name} (dir={item.is_dir()})")
+            logger.error("No model folders found after extraction")
             return False
         
-        # Limpiar temporales
+        # Limpiar ZIP temporal
         os.remove(tmp_path)
-        shutil.rmtree(extract_temp)
-        logger.info(f"✓ Models downloaded and extracted successfully ({copy_count} folders)")
+        logger.info(f"✓ Models extracted successfully ({copy_count} folders)")
         return True
     
     except Exception as e:
