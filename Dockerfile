@@ -23,6 +23,9 @@ ENV PATH=/root/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# Crear carpeta de modelos primero
+RUN mkdir -p /app/models
+
 # Copiar el código de la aplicación
 COPY backend/ ./backend/
 COPY models/ ./models/
