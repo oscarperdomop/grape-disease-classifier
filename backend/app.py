@@ -173,6 +173,28 @@ def health_check():
         "default_model": DEFAULT_MODEL_ID
     }
 
+@app.get("/debug")
+def debug_info():
+    """Debug endpoint para ver estado de modelos"""
+    import os
+    models_dir_exists = os.path.exists(MODELS_DIR)
+    models_dir_contents = []
+    
+    if models_dir_exists:
+        try:
+            models_dir_contents = os.listdir(MODELS_DIR)
+        except Exception as e:
+            models_dir_contents = [f"Error: {e}"]
+    
+    return {
+        "models_dir": MODELS_DIR,
+        "models_dir_exists": models_dir_exists,
+        "models_dir_contents": models_dir_contents,
+        "models_loaded": len(MODELS),
+        "models": {mid: {"name": m.get("name"), "labels": len(m.get("labels", []))} for mid, m in MODELS.items()},
+        "default_model": DEFAULT_MODEL_ID
+    }
+
 def preprocess_image(image: Image.Image, target_size=(224, 224)) -> np.ndarray:
     # Convert to RGB, resize, normalize to float32, CHW
     image = image.convert("RGB")
