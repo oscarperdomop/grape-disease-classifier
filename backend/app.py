@@ -21,26 +21,17 @@ logger = logging.getLogger(__name__)
 logger.info("Starting FastAPI application...")
 
 # Enable CORS for frontend (local y producción)
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost",
-    "http://127.0.0.1",
-    # Agregar aquí las URLs de producción cuando despliegues
-    # "https://your-vercel-app.vercel.app",
-]
-
-# Si estás en producción (Render), permitir todas las subdominio del frontend
-if os.getenv("ENVIRONMENT") == "production":
-    ALLOWED_ORIGINS.extend(["*"])  # O especificar el dominio de Vercel
-
+# En producción, permitir desde cualquier origen (Vercel, localhost, etc)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],  # Permitir todas las orígenes
+    allow_credentials=False,  # False cuando allow_origins es "*"
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=3600,
 )
+
+logger.info("CORS enabled for all origins")
 
 # Try to locate model.onnx in the repo root
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
