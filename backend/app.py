@@ -41,6 +41,7 @@ MODELS_DIR = os.path.join(ROOT, "models")
 MODELS = {}
 DEFAULT_MODEL_ID = None
 AVAILABLE_MODEL_IDS = []  # List of model folders without loading them
+MODEL_METADATA_CACHE = {}  # Cache of model metadata (names, labels) loaded at startup
 
 # Human-friendly names for known folders (override folder name or metadata)
 MODEL_DISPLAY_MAP = {
@@ -56,11 +57,43 @@ def safe_int(x):
     except Exception:
         return None
 
+def get_model_metadata(model_id: str):
+    """Get metadata for a model (name, labels) without loading ONNX"""
+    display_name = MODEL_DISPLAY_MAP.get(model_id, model_id)
+    labels = []
+    
+    model_folder = os.path.join(MODELS_DIR, model_id)
+    
+    # Try to load labels from config files
+    for cfg_name in ("config.json", "config_base.json"):
+        cfg_path = os.path.join(model_folder, cfg_name)
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if isinstance(cfg.get("labels"), list):
+                    labels = cfg.get("labels")
+                    break
+                if isinstance(cfg.get("classes"), list):
+                    labels = cfg.get("classes")
+                    break
+            except Exception as e:
+                logger.debug(f"Failed to read config for {model_id}: {e}")
+    
+    return {
+        "id": model_id,
+        "name": display_name,
+        "framework": "onnx",
+        "num_labels": len(labels),
+        "labels": labels,
+    }
+
 def discover_models():
     """Scan MODELS_DIR and list available models WITHOUT loading them (lazy loading)"""
-    global DEFAULT_MODEL_ID, AVAILABLE_MODEL_IDS
+    global DEFAULT_MODEL_ID, AVAILABLE_MODEL_IDS, MODEL_METADATA_CACHE
     logger.info(f"Scanning models directory: {MODELS_DIR}")
     AVAILABLE_MODEL_IDS = []
+    MODEL_METADATA_CACHE = {}
     
     if not os.path.exists(MODELS_DIR):
         logger.warning(f"Models directory does not exist: {MODELS_DIR}")
@@ -73,6 +106,8 @@ def discover_models():
         onnx_path = os.path.join(model_folder, "model.onnx")
         if os.path.exists(onnx_path):
             AVAILABLE_MODEL_IDS.append(entry)
+            # Pre-load metadata at startup to avoid slow /models requests
+            MODEL_METADATA_CACHE[entry] = get_model_metadata(entry)
             if DEFAULT_MODEL_ID is None:
                 DEFAULT_MODEL_ID = entry
     
@@ -225,102 +260,82 @@ def favicon():
 
 @app.get("/models")
 def list_models():
-    # Return list of ALL available models (loaded or not)
-    # Load default model if not already loaded to populate labels
-    if DEFAULT_MODEL_ID and DEFAULT_MODEL_ID not in MODELS:
-        load_single_model(DEFAULT_MODEL_ID)
-    
-    out = []
-    
-    # Return all available models, loading metadata even if not loaded yet
-    for mid in AVAILABLE_MODEL_IDS:
-        if mid in MODELS:
-            # Already loaded, use cached info
-            m = MODELS[mid]
-            out.append({
-                "id": mid,
-                "name": m.get("name"),
-                "framework": m.get("framework"),
-                "num_labels": len(m.get("labels", [])),
-                "labels": m.get("labels", []),
-            })
-        else:
-            # Not loaded yet, get info from metadata files
-            model_folder = os.path.join(MODELS_DIR, mid)
-            display_name = MODEL_DISPLAY_MAP.get(mid, mid)
-            labels = []
-            
-            # Try to load labels from config files without loading full model
-            for cfg_name in ("config.json", "config_base.json"):
-                cfg_path = os.path.join(model_folder, cfg_name)
-                if os.path.exists(cfg_path):
-                    try:
-                        with open(cfg_path, "r", encoding="utf-8") as f:
-                            cfg = json.load(f)
-                        if isinstance(cfg.get("labels"), list):
-                            labels = cfg.get("labels")
-                            break
-                        if isinstance(cfg.get("classes"), list):
-                            labels = cfg.get("classes")
-                            break
-                    except Exception:
-                        pass
-            
-            out.append({
-                "id": mid,
-                "name": display_name,
-                "framework": "onnx",
-                "num_labels": len(labels),
-                "labels": labels,
-            })
-    
-    return {"models": out, "default": DEFAULT_MODEL_ID, "available": AVAILABLE_MODEL_IDS}
+    """Return list of ALL available models - uses cached metadata for speed"""
+    try:
+        # Load default model if not already loaded to populate labels
+        if DEFAULT_MODEL_ID and DEFAULT_MODEL_ID not in MODELS:
+            load_single_model(DEFAULT_MODEL_ID)
+        
+        # Return all models using cached metadata
+        out = []
+        for mid in AVAILABLE_MODEL_IDS:
+            if mid in MODEL_METADATA_CACHE:
+                out.append(MODEL_METADATA_CACHE[mid])
+            else:
+                # Fallback (shouldn't happen if discover_models ran)
+                out.append(get_model_metadata(mid))
+        
+        return {"models": out, "default": DEFAULT_MODEL_ID, "available": AVAILABLE_MODEL_IDS}
+    except Exception as e:
+        logger.error(f"Error in /models endpoint: {e}", exc_info=True)
+        # Return at least the available model IDs even if metadata fails
+        return {
+            "models": [{"id": mid, "name": MODEL_DISPLAY_MAP.get(mid, mid)} for mid in AVAILABLE_MODEL_IDS],
+            "default": DEFAULT_MODEL_ID,
+            "available": AVAILABLE_MODEL_IDS,
+            "error": str(e)
+        }
 
 
 @app.post("/predict")
 async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int = 4):
-    content = await file.read()
     try:
-        image = Image.open(io.BytesIO(content))
+        content = await file.read()
+        try:
+            image = Image.open(io.BytesIO(content))
+        except Exception as e:
+            logger.error(f"Failed to open image: {e}")
+            return JSONResponse(status_code=400, content={"error": "Invalid image file", "detail": str(e)})
+        
+        # choose model
+        chosen = model_id or DEFAULT_MODEL_ID
+        if not chosen or chosen not in AVAILABLE_MODEL_IDS:
+            return JSONResponse(status_code=400, content={"error": "Invalid or missing model_id", "available_models": AVAILABLE_MODEL_IDS})
+
+        # Load model on-demand if not already loaded
+        if chosen not in MODELS:
+            load_single_model(chosen)
+        
+        if chosen not in MODELS:
+            return JSONResponse(status_code=500, content={"error": f"Failed to load model {chosen}"})
+
+        model = MODELS[chosen]
+        H, W = model.get("input_shape", (224, 224))
+        input_name = model.get("input_name")
+        session = model.get("session")
+
+        arr = preprocess_image(image, target_size=(H or 224, W or 224))
+        # ONNX expects float32
+        arr = arr.astype(np.float32)
+        inputs = {input_name: arr}
+        preds = session.run(None, inputs)[0]
+        # preds shape: (1, num_classes) or similar
+        if preds.ndim == 2:
+            probs = softmax(preds[0])
+        elif preds.ndim == 1:
+            probs = softmax(preds)
+        else:
+            # flatten and softmax
+            probs = softmax(preds.ravel())
+
+        top_idx = np.argsort(probs)[-top_k:][::-1]
+        results = []
+        labels = model.get("labels", [])
+        for idx in top_idx:
+            label = labels[idx] if labels and idx < len(labels) else str(int(idx))
+            results.append({"label": label, "index": int(idx), "score": float(probs[idx])})
+
+        return {"predictions": results}
     except Exception as e:
-        return JSONResponse(status_code=400, content={"error": "Invalid image file", "detail": str(e)})
-    
-    # choose model
-    chosen = model_id or DEFAULT_MODEL_ID
-    if not chosen or chosen not in AVAILABLE_MODEL_IDS:
-        return JSONResponse(status_code=400, content={"error": "Invalid or missing model_id", "available_models": AVAILABLE_MODEL_IDS})
-
-    # Load model on-demand if not already loaded
-    if chosen not in MODELS:
-        load_single_model(chosen)
-    
-    if chosen not in MODELS:
-        return JSONResponse(status_code=500, content={"error": f"Failed to load model {chosen}"})
-
-    model = MODELS[chosen]
-    H, W = model.get("input_shape", (224, 224))
-    input_name = model.get("input_name")
-    session = model.get("session")
-
-    arr = preprocess_image(image, target_size=(H or 224, W or 224))
-    # ONNX expects float32
-    arr = arr.astype(np.float32)
-    inputs = {input_name: arr}
-    preds = session.run(None, inputs)[0]
-    # preds shape: (1, num_classes) or similar
-    if preds.ndim == 2:
-        probs = softmax(preds[0])
-    elif preds.ndim == 1:
-        probs = softmax(preds)
-    else:
-        # flatten and softmax
-        probs = softmax(preds.ravel())
-
-    top_idx = np.argsort(probs)[-top_k:][::-1]
-    results = []
-    labels = model.get("labels", [])
-    for idx in top_idx:
-        label = labels[idx] if labels and idx < len(labels) else str(int(idx))
-        results.append({"label": label, "index": int(idx), "score": float(probs[idx])})
-
-    return {"predictions": results}
+        logger.error(f"Prediction error: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Internal server error", "detail": str(e)})
