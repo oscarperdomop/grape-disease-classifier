@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import sys
 from typing import List
 
 import numpy as np
@@ -11,6 +12,13 @@ from PIL import Image
 import onnxruntime as ort
 
 app = FastAPI(title="Model inference API")
+
+# Logging
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+logger.info("Starting FastAPI application...")
 
 # Enable CORS for frontend (local y producción)
 ALLOWED_ORIGINS = [
@@ -58,10 +66,14 @@ def safe_int(x):
 
 def load_models():
     global DEFAULT_MODEL_ID
+    logger.info(f"Loading models from: {MODELS_DIR}")
+    
     if not os.path.exists(MODELS_DIR):
+        logger.warning(f"Models directory does not exist: {MODELS_DIR}")
         # fallback: look for model.onnx in repo root (legacy)
         legacy_model = os.path.join(ROOT, "model.onnx")
         if os.path.exists(legacy_model):
+            logger.info(f"Found legacy model at {legacy_model}")
             sid = "model_1"
             sess = ort.InferenceSession(legacy_model, providers=["CPUExecutionProvider"])
             meta = sess.get_inputs()[0]
@@ -78,6 +90,8 @@ def load_models():
                 "labels": [],
             }
             DEFAULT_MODEL_ID = sid
+        else:
+            logger.warning("No models found anywhere!")
         return
 
     for entry in sorted(os.listdir(MODELS_DIR)):
@@ -87,8 +101,10 @@ def load_models():
         # prefer model.onnx
         onnx_path = os.path.join(model_folder, "model.onnx")
         if not os.path.exists(onnx_path):
+            logger.debug(f"No model.onnx found in {model_folder}")
             continue
         try:
+            logger.info(f"Loading model: {entry}")
             sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
             meta = sess.get_inputs()[0]
             shape = meta.shape
@@ -134,15 +150,37 @@ def load_models():
                 "input_shape": (H, W),
                 "labels": labels,
             }
+            logger.info(f"✓ Loaded model: {entry} ({display_name})")
             if DEFAULT_MODEL_ID is None:
                 DEFAULT_MODEL_ID = entry
         except Exception as e:
             # skip invalid model but keep going
-            print(f"Warning: failed to load model at {onnx_path}: {e}")
+            logger.error(f"✗ Failed to load model at {onnx_path}: {e}")
+    
+    logger.info(f"Total models loaded: {len(MODELS)}")
+    logger.info(f"Default model: {DEFAULT_MODEL_ID}")
 
 
 # load models at startup
-load_models()
+try:
+    load_models()
+    logger.info("✓ Models loaded successfully")
+except Exception as e:
+    logger.error(f"✗ Failed to load models: {e}")
+    logger.error("Application will run but predictions may fail")
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("FastAPI startup complete. Ready to serve requests.")
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "models_loaded": len(MODELS),
+        "default_model": DEFAULT_MODEL_ID
+    }
 
 def preprocess_image(image: Image.Image, target_size=(224, 224)) -> np.ndarray:
     # Convert to RGB, resize, normalize to float32, CHW
