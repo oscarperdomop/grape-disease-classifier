@@ -81,19 +81,36 @@ def download_models(download_url):
         
         # Listar contenido extraído
         logger.info(f"Contents extracted:")
+        all_files = []
         for item in sorted(extract_temp.rglob("*")):
+            rel_path = str(item.relative_to(extract_temp)).replace("\\", "/")
+            all_files.append(rel_path)
             if item.is_file():
-                logger.info(f"  FILE: {item.relative_to(extract_temp)}")
+                logger.info(f"  FILE: {rel_path}")
             else:
-                logger.info(f"  DIR:  {item.relative_to(extract_temp)}")
+                logger.info(f"  DIR:  {rel_path}")
         
-        # Buscar carpeta "models"
+        # Buscar carpeta "models" (manejar backslashes de Windows)
         models_source = extract_temp / "models"
+        
+        # Si no existe con forward slash, buscar en los archivos extraídos
+        if not models_source.exists():
+            logger.warning(f"Models folder not found at {models_source}, searching in extracted files...")
+            # Buscar cualquier archivo que tenga "model_1/model.onnx" o "model_1\model.onnx"
+            for fpath in all_files:
+                if "model_1" in fpath and "model.onnx" in fpath:
+                    # Encontramos model_1, buscar su padre
+                    parts = fpath.replace("\\", "/").split("/")
+                    if "models" in parts:
+                        models_idx = parts.index("models")
+                        models_source = extract_temp / "models"
+                        logger.info(f"Found models structure, using: {models_source}")
+                        break
         
         if not models_source.exists():
             logger.error(f"Models folder not found at {models_source}")
             logger.error("Available directories:")
-            for item in extract_temp.iterdir():
+            for item in sorted(extract_temp.iterdir()):
                 logger.error(f"  {item.name}")
             return False
         
@@ -111,7 +128,7 @@ def download_models(download_url):
         
         # Copiar carpetas de modelos
         copy_count = 0
-        for model_folder in models_source.iterdir():
+        for model_folder in sorted(models_source.iterdir()):
             if model_folder.is_dir():
                 dest = MODELS_DIR / model_folder.name
                 shutil.copytree(model_folder, dest)
@@ -120,6 +137,9 @@ def download_models(download_url):
         
         if copy_count == 0:
             logger.error("No model folders found to copy")
+            logger.error(f"Contents of {models_source}:")
+            for item in models_source.iterdir():
+                logger.error(f"  {item.name} (dir={item.is_dir()})")
             return False
         
         # Limpiar temporales
