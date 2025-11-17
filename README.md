@@ -25,6 +25,21 @@ Sistema completo de clasificación de enfermedades en uvas con:
 | **Modelos**     | ONNX Runtime 1.20.1 | 4 arquitecturas (ConvNeXt, dlvtnet, mobilenetv3, swin_gsrdn) |
 | **Database**    | N/A (stateless)     | -                                                            |
 
+### ⚙️ Limitaciones del Plan Gratuito (Render Free Tier)
+
+| Recurso         | Límite | Estado                       |
+| --------------- | ------ | ---------------------------- |
+| RAM             | 512 MB | ✅ Suficiente para 3 modelos |
+| Modelos activos | 3/4    | ⚠️ model_4 deshabilitado     |
+| Cold start      | 30s    | ✅ Aceptable                 |
+| Almacenamiento  | 500 MB | ✅ Suficiente                |
+
+**Upgrade a Pro ($12/mes):**
+
+- 2 GB RAM (4 modelos simultáneos)
+- Mejor performance
+- Sin limitaciones de modelos
+
 ---
 
 ## 🏗️ Arquitectura & Estructura
@@ -414,35 +429,53 @@ return predictions                       # Cached: <2s
 
 ### Memory Management
 
-| Fase                   | Memoria | Modelos Cargados |
-| ---------------------- | ------- | ---------------- |
-| Startup                | ~50MB   | 0                |
-| /models request        | ~50MB   | 0                |
-| 1er /predict (model_1) | ~150MB  | 1                |
-| 2do /predict (model_2) | ~250MB  | 2                |
-| Todos cargados         | ~400MB  | 4                |
+| Fase                   | Memoria | Modelos Cargados | Plan             |
+| ---------------------- | ------- | ---------------- | ---------------- |
+| Startup                | ~50MB   | 0                | Free             |
+| /models request        | ~50MB   | 0                | Free             |
+| 1er /predict (model_1) | ~120MB  | 1 (ConvNeXt)     | Free             |
+| 2do /predict (model_2) | ~180MB  | 2 (dlvtnet)      | Free             |
+| 3er /predict (model_3) | ~250MB  | 3 (mobilenetv3)  | Free             |
+| +/predict (model_4)    | >400MB  | 4 (swin_gsrdn)   | ❌ Free / ✅ Pro |
 
-**Render free tier: 512MB** ✅
+**Render free tier: 512MB** → **3 modelos máximo** ⚠️
+
+**Solución**:
+
+- En producción, model_4 se desactiva automáticamente
+- El frontend muestra aviso: "Modelos deshabilitados en plan gratuito"
+- Upgrade a Pro ($12/mes) para usar todos los 4 modelos
 
 ---
 
 ## 🐛 Troubleshooting
 
-### 502 Bad Gateway
+### 502 Bad Gateway - model_4 (swin_gsrdn) crashes
 
-**Causa**: Backend crash o exception no manejada
+**Causa**: model_4 es muy pesado (~150MB+) y excede memoria del plan free (512MB)
+
+**Síntoma**: Funciona con model_1/2/3 pero falla con model_4
 
 **Solución**:
 
 ```bash
-# Check Render logs
-# Backend debería tener try-catch en endpoints
+# En DESARROLLO: Funciona todo localmente
+docker-compose up
 
-# Local test
-curl http://localhost:8000/health
+# En PRODUCCIÓN (Render free tier):
+# ✅ model_1, model_2, model_3 disponibles
+# ❌ model_4 automáticamente deshabilitado
+# Frontend muestra: "Modelos deshabilitados en plan gratuito"
+
+# Upgrade a Pro:
+# 1. Render Dashboard → Service settings → Change plan
+# 2. Select "Pro" ($12/month, 2GB RAM)
+# 3. Auto-redeploy con todos los 4 modelos
 ```
 
-### /models endpoint lento (>5s)
+---
+
+### Modelos no cargan
 
 **Causa**: Archivo de configuración corrompido o encoding inválido
 
