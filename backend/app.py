@@ -225,20 +225,55 @@ def favicon():
 
 @app.get("/models")
 def list_models():
-    # Return list of available models with basic info
-    # Load default model if not already loaded to avoid empty list
+    # Return list of ALL available models (loaded or not)
+    # Load default model if not already loaded to populate labels
     if DEFAULT_MODEL_ID and DEFAULT_MODEL_ID not in MODELS:
         load_single_model(DEFAULT_MODEL_ID)
     
     out = []
-    for mid, m in MODELS.items():
-        out.append({
-            "id": mid,
-            "name": m.get("name"),
-            "framework": m.get("framework"),
-            "num_labels": len(m.get("labels", [])),
-            "labels": m.get("labels", []),
-        })
+    
+    # Return all available models, loading metadata even if not loaded yet
+    for mid in AVAILABLE_MODEL_IDS:
+        if mid in MODELS:
+            # Already loaded, use cached info
+            m = MODELS[mid]
+            out.append({
+                "id": mid,
+                "name": m.get("name"),
+                "framework": m.get("framework"),
+                "num_labels": len(m.get("labels", [])),
+                "labels": m.get("labels", []),
+            })
+        else:
+            # Not loaded yet, get info from metadata files
+            model_folder = os.path.join(MODELS_DIR, mid)
+            display_name = MODEL_DISPLAY_MAP.get(mid, mid)
+            labels = []
+            
+            # Try to load labels from config files without loading full model
+            for cfg_name in ("config.json", "config_base.json"):
+                cfg_path = os.path.join(model_folder, cfg_name)
+                if os.path.exists(cfg_path):
+                    try:
+                        with open(cfg_path, "r", encoding="utf-8") as f:
+                            cfg = json.load(f)
+                        if isinstance(cfg.get("labels"), list):
+                            labels = cfg.get("labels")
+                            break
+                        if isinstance(cfg.get("classes"), list):
+                            labels = cfg.get("classes")
+                            break
+                    except Exception:
+                        pass
+            
+            out.append({
+                "id": mid,
+                "name": display_name,
+                "framework": "onnx",
+                "num_labels": len(labels),
+                "labels": labels,
+            })
+    
     return {"models": out, "default": DEFAULT_MODEL_ID, "available": AVAILABLE_MODEL_IDS}
 
 
