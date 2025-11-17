@@ -1,168 +1,187 @@
-import React, { useState, useEffect } from 'react'
-import { Upload, Leaf, AlertCircle, CheckCircle2, XCircle, Brain, Zap, Sparkles, Cpu, ShieldCheck, ShieldAlert } from 'lucide-react'
+import React, { useState, useEffect } from "react";
+import {
+  Upload,
+  Leaf,
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  Brain,
+  Zap,
+  Sparkles,
+  Cpu,
+  ShieldCheck,
+  ShieldAlert,
+} from "lucide-react";
+
+// Configurar URL del backend según el entorno
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 const DISEASE_INFO = {
-  'Black Rot': {
-    description: 'Enfermedad fúngica que causa lesiones oscuras en hojas.',
-    severity: 'diseased',
+  "Black Rot": {
+    description: "Enfermedad fúngica que causa lesiones oscuras en hojas.",
+    severity: "diseased",
     icon: ShieldAlert,
   },
-  'ESCA': {
-    description: 'Enfermedad compleja que causa patrones de rayas de tigre y pudrición.',
-    severity: 'diseased',
+  ESCA: {
+    description:
+      "Enfermedad compleja que causa patrones de rayas de tigre y pudrición.",
+    severity: "diseased",
     icon: ShieldAlert,
   },
-  'Healthy': {
-    description: 'No se detectó enfermedad. La planta parece saludable.',
-    severity: 'healthy',
+  Healthy: {
+    description: "No se detectó enfermedad. La planta parece saludable.",
+    severity: "healthy",
     icon: ShieldCheck,
   },
-  'Leaf Blight': {
-    description: 'Infección fúngica que causa manchas marrones y deterioro de las hojas.',
-    severity: 'diseased',
+  "Leaf Blight": {
+    description:
+      "Infección fúngica que causa manchas marrones y deterioro de las hojas.",
+    severity: "diseased",
     icon: ShieldAlert,
   },
-}
+};
 
 const MODEL_ICONS = {
-  'convnext': Brain,
-  'efficientnet': Zap,
-  'resnet': Cpu,
-  'vit': Sparkles,
-  'default': Brain
-}
+  convnext: Brain,
+  efficientnet: Zap,
+  resnet: Cpu,
+  vit: Sparkles,
+  default: Brain,
+};
 
 const getModelIcon = (modelId) => {
-  const id = modelId.toLowerCase()
+  const id = modelId.toLowerCase();
   for (const key in MODEL_ICONS) {
     if (id.includes(key)) {
-      return MODEL_ICONS[key]
+      return MODEL_ICONS[key];
     }
   }
-  return MODEL_ICONS.default
-}
+  return MODEL_ICONS.default;
+};
 
 export default function App() {
-  const [selectedImage, setSelectedImage] = useState(null)
-  const [currentFile, setCurrentFile] = useState(null)
-  const [predictions, setPredictions] = useState(null)
-  const [topPrediction, setTopPrediction] = useState(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [isDragging, setIsDragging] = useState(false)
-  const [models, setModels] = useState([])
-  const [selectedModel, setSelectedModel] = useState(null)
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [currentFile, setCurrentFile] = useState(null);
+  const [predictions, setPredictions] = useState(null);
+  const [topPrediction, setTopPrediction] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState(null);
 
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const res = await fetch('http://localhost:8000/models')
-        const data = await res.json()
-        const list = data.models || []
-        setModels(list)
+        const res = await fetch(`${API_URL}/models`);
+        const data = await res.json();
+        const list = data.models || [];
+        setModels(list);
         if (data.default && !selectedModel) {
-          setSelectedModel(data.default)
+          setSelectedModel(data.default);
         } else if (list.length > 0 && !selectedModel) {
-          setSelectedModel(list[0].id)
+          setSelectedModel(list[0].id);
         }
       } catch (err) {
-        console.warn('Could not load models:', err)
+        console.warn("Could not load models:", err);
       }
-    }
-    loadModels()
-  }, [])
+    };
+    loadModels();
+  }, []);
 
   useEffect(() => {
     if (currentFile && selectedModel && !isLoading) {
-      handleImageSelect(currentFile)
+      handleImageSelect(currentFile);
     }
-  }, [selectedModel])
+  }, [selectedModel]);
 
   const handleImageSelect = async (file) => {
-    setCurrentFile(file)
-    
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      setSelectedImage(e.target.result)
-    }
-    reader.readAsDataURL(file)
+    setCurrentFile(file);
 
-    setIsLoading(true)
-    setPredictions(null)
-    setTopPrediction(null)
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setSelectedImage(e.target.result);
+    };
+    reader.readAsDataURL(file);
+
+    setIsLoading(true);
+    setPredictions(null);
+    setTopPrediction(null);
 
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('top_k', '5')
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("top_k", "5");
 
-      const modelQuery = selectedModel ? `?model_id=${encodeURIComponent(selectedModel)}` : ''
-      const response = await fetch(`http://localhost:8000/predict${modelQuery}`, {
-        method: 'POST',
+      const modelQuery = selectedModel
+        ? `?model_id=${encodeURIComponent(selectedModel)}`
+        : "";
+      const response = await fetch(`${API_URL}/predict${modelQuery}`, {
+        method: "POST",
         body: formData,
-      })
+      });
 
       if (!response.ok) {
-        throw new Error('Prediction failed')
+        throw new Error("Prediction failed");
       }
 
-      const data = await response.json()
-      const preds = data.predictions || data
-      
-      setPredictions(preds)
+      const data = await response.json();
+      const preds = data.predictions || data;
+
+      setPredictions(preds);
       if (preds && preds.length > 0) {
         setTopPrediction({
           class: preds[0].label,
           confidence: preds[0].score,
-        })
+        });
       }
     } catch (error) {
-      console.error('Prediction error:', error)
-      alert('Error al analizar la imagen. Por favor intenta de nuevo.')
+      console.error("Prediction error:", error);
+      alert("Error al analizar la imagen. Por favor intenta de nuevo.");
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
   const handleDrop = (e) => {
-    e.preventDefault()
-    setIsDragging(false)
+    e.preventDefault();
+    setIsDragging(false);
 
-    const file = e.dataTransfer.files[0]
-    if (file && file.type.startsWith('image/')) {
-      handleImageSelect(file)
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith("image/")) {
+      handleImageSelect(file);
     }
-  }
+  };
 
   const handleFileInput = (e) => {
-    const file = e.target.files?.[0]
+    const file = e.target.files?.[0];
     if (file) {
-      handleImageSelect(file)
+      handleImageSelect(file);
     }
-  }
+  };
 
   const getSeverityColor = (severity) => {
     switch (severity) {
-      case 'diseased':
-        return 'text-error'
-      case 'healthy':
-        return 'text-success'
+      case "diseased":
+        return "text-error";
+      case "healthy":
+        return "text-success";
       default:
-        return 'text-muted'
+        return "text-muted";
     }
-  }
+  };
 
   const getSeverityLabel = (severity) => {
     switch (severity) {
-      case 'diseased':
-        return 'Enferma'
-      case 'healthy':
-        return 'Sana'
+      case "diseased":
+        return "Enferma";
+      case "healthy":
+        return "Sana";
       default:
-        return 'Desconocido'
+        return "Desconocido";
     }
-  }
+  };
 
-  const currentModel = models.find((m) => m.id === selectedModel) || null
+  const currentModel = models.find((m) => m.id === selectedModel) || null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -193,13 +212,13 @@ export default function App() {
               </h3>
               <div className="model-selector">
                 {models.map((model) => {
-                  const Icon = getModelIcon(model.id)
-                  const isSelected = selectedModel === model.id
+                  const Icon = getModelIcon(model.id);
+                  const isSelected = selectedModel === model.id;
                   return (
                     <button
                       key={model.id}
                       onClick={() => setSelectedModel(model.id)}
-                      className={`model-card ${isSelected ? 'selected' : ''}`}
+                      className={`model-card ${isSelected ? "selected" : ""}`}
                     >
                       <div className="model-icon-wrapper">
                         <Icon className="model-icon" />
@@ -207,14 +226,18 @@ export default function App() {
                       <div className="model-info">
                         <p className="model-name">{model.name || model.id}</p>
                         {model.labels && (
-                          <p className="model-detail">{model.labels.length} clases</p>
+                          <p className="model-detail">
+                            {model.labels.length} clases
+                          </p>
                         )}
                       </div>
-                      <div className={`model-check ${isSelected ? 'visible' : ''}`}>
+                      <div
+                        className={`model-check ${isSelected ? "visible" : ""}`}
+                      >
                         <CheckCircle2 className="h-5 w-5" />
                       </div>
                     </button>
-                  )
+                  );
                 })}
               </div>
             </div>
@@ -229,14 +252,14 @@ export default function App() {
                 <div
                   onDrop={handleDrop}
                   onDragOver={(e) => {
-                    e.preventDefault()
-                    setIsDragging(true)
+                    e.preventDefault();
+                    setIsDragging(true);
                   }}
                   onDragLeave={() => setIsDragging(false)}
                   className={`flex flex-col items-center justify-center space-y-4 rounded-lg border-2 border-dashed p-12 transition-colors ${
                     isDragging
-                      ? 'border-primary bg-primary-light'
-                      : 'border-border bg-muted-light'
+                      ? "border-primary bg-primary-light"
+                      : "border-border bg-muted-light"
                   }`}
                 >
                   <div className="rounded-full bg-primary-light p-4">
@@ -257,7 +280,10 @@ export default function App() {
                     className="hidden"
                     id="file-upload"
                   />
-                  <label htmlFor="file-upload" className="btn btn-primary cursor-pointer">
+                  <label
+                    htmlFor="file-upload"
+                    className="btn btn-primary cursor-pointer"
+                  >
                     Seleccionar Imagen
                   </label>
                 </div>
@@ -289,9 +315,7 @@ export default function App() {
                 <div className="card-content p-8">
                   <div className="flex flex-col items-center justify-center space-y-4">
                     <div className="spinner"></div>
-                    <p className="text-sm text-muted">
-                      Analizando imagen...
-                    </p>
+                    <p className="text-sm text-muted">Analizando imagen...</p>
                   </div>
                 </div>
               </div>
@@ -303,35 +327,39 @@ export default function App() {
                   <div className="card-content p-6">
                     <div className="mb-4 flex items-start justify-between">
                       <div>
-                        <p className="text-sm text-muted">
-                          Diagnóstico
-                        </p>
+                        <p className="text-sm text-muted">Diagnóstico</p>
                         <h2 className="mt-1 text-3xl font-bold text-foreground">
                           {topPrediction.class}
                         </h2>
                       </div>
                       {(() => {
-                        const info = DISEASE_INFO[topPrediction.class] || DISEASE_INFO['Healthy']
-                        const Icon = info.icon
+                        const info =
+                          DISEASE_INFO[topPrediction.class] ||
+                          DISEASE_INFO["Healthy"];
+                        const Icon = info.icon;
                         return (
                           <div className="flex flex-col items-center gap-1">
                             <Icon
-                              className={`h-12 w-12 ${getSeverityColor(info.severity)}`}
+                              className={`h-12 w-12 ${getSeverityColor(
+                                info.severity
+                              )}`}
                             />
-                            <span className={`text-xs font-medium ${getSeverityColor(info.severity)}`}>
+                            <span
+                              className={`text-xs font-medium ${getSeverityColor(
+                                info.severity
+                              )}`}
+                            >
                               {getSeverityLabel(info.severity)}
                             </span>
                           </div>
-                        )
+                        );
                       })()}
                     </div>
 
                     <div className="space-y-4">
                       <div>
                         <div className="mb-2 flex items-center justify-between text-sm">
-                          <span className="text-muted">
-                            Confianza
-                          </span>
+                          <span className="text-muted">Confianza</span>
                           <span className="font-semibold text-foreground">
                             {(topPrediction.confidence * 100).toFixed(1)}%
                           </span>
@@ -348,7 +376,12 @@ export default function App() {
 
                       <div className="alert">
                         <p className="text-sm leading-relaxed">
-                          {(DISEASE_INFO[topPrediction.class] || DISEASE_INFO['Healthy']).description}
+                          {
+                            (
+                              DISEASE_INFO[topPrediction.class] ||
+                              DISEASE_INFO["Healthy"]
+                            ).description
+                          }
                         </p>
                       </div>
                     </div>
@@ -412,14 +445,16 @@ export default function App() {
             <div className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
               <div className="space-y-1">
                 <p className="font-medium text-foreground">Modelo</p>
-                <p className="text-muted">{currentModel ? currentModel.name : 'ConvNeXt Tiny'}</p>
+                <p className="text-muted">
+                  {currentModel ? currentModel.name : "ConvNeXt Tiny"}
+                </p>
               </div>
               <div className="space-y-1">
                 <p className="font-medium text-foreground">Clases</p>
                 <p className="text-muted">
-                  {currentModel && currentModel.labels 
-                    ? `${currentModel.labels.length} tipos de enfermedades` 
-                    : '4 tipos de enfermedades'}
+                  {currentModel && currentModel.labels
+                    ? `${currentModel.labels.length} tipos de enfermedades`
+                    : "4 tipos de enfermedades"}
                 </p>
               </div>
               <div className="space-y-1">
@@ -435,5 +470,5 @@ export default function App() {
         </div>
       </main>
     </div>
-  )
+  );
 }
