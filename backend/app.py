@@ -51,6 +51,12 @@ MODEL_DISPLAY_MAP = {
     "model_4": "swin_gsrdn",
 }
 
+# Production environment flag
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
+
+# Models that require more memory (disable in production free tier)
+MEMORY_INTENSIVE_MODELS = {"model_4"}  # swin_gsrdn requires ~150MB+
+
 def safe_int(x):
     try:
         return int(x)
@@ -92,6 +98,7 @@ def discover_models():
     """Scan MODELS_DIR and list available models WITHOUT loading them (lazy loading)"""
     global DEFAULT_MODEL_ID, AVAILABLE_MODEL_IDS, MODEL_METADATA_CACHE
     logger.info(f"Scanning models directory: {MODELS_DIR}")
+    logger.info(f"Environment: {'PRODUCTION' if IS_PRODUCTION else 'DEVELOPMENT'}")
     AVAILABLE_MODEL_IDS = []
     MODEL_METADATA_CACHE = {}
     
@@ -105,6 +112,11 @@ def discover_models():
             continue
         onnx_path = os.path.join(model_folder, "model.onnx")
         if os.path.exists(onnx_path):
+            # Skip memory-intensive models in production
+            if IS_PRODUCTION and entry in MEMORY_INTENSIVE_MODELS:
+                logger.warning(f"⚠️  Skipping {entry} in production (memory-intensive, upgrade plan to Pro)")
+                continue
+            
             AVAILABLE_MODEL_IDS.append(entry)
             # Pre-load metadata at startup to avoid slow /models requests
             MODEL_METADATA_CACHE[entry] = get_model_metadata(entry)
@@ -299,8 +311,23 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
         
         # choose model
         chosen = model_id or DEFAULT_MODEL_ID
-        if not chosen or chosen not in AVAILABLE_MODEL_IDS:
-            return JSONResponse(status_code=400, content={"error": "Invalid or missing model_id", "available_models": AVAILABLE_MODEL_IDS})
+        
+        # Check if model exists in filesystem
+        if chosen and chosen not in AVAILABLE_MODEL_IDS:
+            reason = ""
+            if IS_PRODUCTION and chosen in MEMORY_INTENSIVE_MODELS:
+                reason = " (disabled in free tier - too memory intensive)"
+            return JSONResponse(
+                status_code=400, 
+                content={
+                    "error": f"Model '{chosen}' not available{reason}", 
+                    "available_models": AVAILABLE_MODEL_IDS,
+                    "note": "Upgrade to Pro plan to use all models"
+                }
+            )
+        
+        if not chosen:
+            return JSONResponse(status_code=400, content={"error": "No model_id provided and no default available"})
 
         # Load model on-demand if not already loaded
         if chosen not in MODELS:

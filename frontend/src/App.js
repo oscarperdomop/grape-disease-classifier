@@ -68,6 +68,8 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(null);
+  const [unavailableModels, setUnavailableModels] = useState([]);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const loadModels = async () => {
@@ -75,7 +77,20 @@ export default function App() {
         const res = await fetch(`${API_URL}/models`);
         const data = await res.json();
         const list = data.models || [];
+        const available = data.available || [];
+        
+        // Detectar modelos deshabilitados
+        const unavailable = data.models ? 
+          data.models.filter(m => !available.includes(m.id)).map(m => m.id) : 
+          [];
+        
         setModels(list);
+        setUnavailableModels(unavailable);
+        
+        if (unavailable.length > 0) {
+          setError(`⚠️ Modelos deshabilitados en plan gratuito: ${unavailable.join(", ")} (Upgrade a Pro para usarlos)`);
+        }
+        
         if (data.default && !selectedModel) {
           setSelectedModel(data.default);
         } else if (list.length > 0 && !selectedModel) {
@@ -83,6 +98,7 @@ export default function App() {
         }
       } catch (err) {
         console.warn("Could not load models:", err);
+        setError("Error cargando modelos. Verifica la conexión con el backend.");
       }
     };
     loadModels();
@@ -204,6 +220,13 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        {error && (
+          <div className="mb-6 rounded-lg bg-yellow-50 p-4 border border-yellow-200">
+            <p className="text-sm text-yellow-800">
+              {error}
+            </p>
+          </div>
+        )}
         {models && models.length > 0 && (
           <div className="card mb-8">
             <div className="card-content p-6">

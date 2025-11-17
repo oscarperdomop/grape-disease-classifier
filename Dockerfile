@@ -21,7 +21,8 @@ COPY --from=builder /root/.local /root/.local
 # Configurar PATH para usar las dependencias
 ENV PATH=/root/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    ENVIRONMENT=production
 
 # Crear carpeta de modelos primero
 RUN mkdir -p /app/models
