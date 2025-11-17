@@ -54,14 +54,75 @@ MODEL_DISPLAY_MAP = {
 # Production environment flag
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
 
-# Models that require more memory (disable in production free tier)
-MEMORY_INTENSIVE_MODELS = {"model_4"}  # swin_gsrdn requires ~150MB+
+# Memory management configuration
+MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "400"))  # Conservative limit for 512MB tier
+MODEL_MEMORY_ESTIMATES = {
+    "model_1": 70,   # ConvNeXt
+    "model_2": 60,   # dlvtnet  
+    "model_3": 50,   # mobilenetv3
+    "model_4": 150,  # swin_gsrdn
+}
+MAX_CONCURRENT_MODELS = int(os.getenv("MAX_CONCURRENT_MODELS", "2"))  # Limit concurrent models
+MODEL_USAGE_TRACKER = {}  # Track last usage time for LRU eviction
 
 def safe_int(x):
     try:
         return int(x)
     except Exception:
         return None
+
+def get_memory_usage():
+    """Get current memory usage in MB"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / 1024 / 1024
+    except ImportError:
+        # Fallback if psutil not available
+        return 0
+
+def estimate_total_model_memory():
+    """Estimate total memory used by loaded models"""
+    total = 0
+    for model_id in MODELS:
+        total += MODEL_MEMORY_ESTIMATES.get(model_id, 100)
+    return total
+
+def can_load_model(model_id: str):
+    """Check if we can load a model without exceeding memory limits"""
+    current_memory = estimate_total_model_memory()
+    new_model_memory = MODEL_MEMORY_ESTIMATES.get(model_id, 100)
+    
+    # Check if adding this model would exceed limits
+    if current_memory + new_model_memory > MAX_MEMORY_MB:
+        return False
+    
+    # Check concurrent model limit
+    if len(MODELS) >= MAX_CONCURRENT_MODELS and model_id not in MODELS:
+        return False
+        
+    return True
+
+def unload_least_recently_used_model():
+    """Unload the least recently used model to free memory"""
+    if not MODELS or not MODEL_USAGE_TRACKER:
+        return None
+        
+    # Find least recently used model
+    lru_model = min(MODEL_USAGE_TRACKER.items(), key=lambda x: x[1])
+    model_id = lru_model[0]
+    
+    if model_id in MODELS:
+        logger.info(f"🗑️  Unloading model {model_id} to free memory")
+        del MODELS[model_id]
+        del MODEL_USAGE_TRACKER[model_id]
+        return model_id
+    return None
+
+def update_model_usage(model_id: str):
+    """Update last usage time for a model"""
+    import time
+    MODEL_USAGE_TRACKER[model_id] = time.time()
 
 def get_model_metadata(model_id: str):
     """Get metadata for a model (name, labels) without loading ONNX"""
@@ -112,11 +173,7 @@ def discover_models():
             continue
         onnx_path = os.path.join(model_folder, "model.onnx")
         if os.path.exists(onnx_path):
-            # Skip memory-intensive models in production
-            if IS_PRODUCTION and entry in MEMORY_INTENSIVE_MODELS:
-                logger.warning(f"⚠️  Skipping {entry} in production (memory-intensive, upgrade plan to Pro)")
-                continue
-            
+            # All models are now available with smart memory management
             AVAILABLE_MODEL_IDS.append(entry)
             # Pre-load metadata at startup to avoid slow /models requests
             MODEL_METADATA_CACHE[entry] = get_model_metadata(entry)
@@ -127,19 +184,34 @@ def discover_models():
     logger.info(f"Default model will be: {DEFAULT_MODEL_ID}")
 
 def load_single_model(model_id: str):
-    """Load a single model on-demand (lazy loading)"""
+    """Load a single model on-demand with smart memory management"""
     if model_id in MODELS:
+        update_model_usage(model_id)  # Update usage tracker
         return MODELS[model_id]  # Already loaded
     
     if model_id not in AVAILABLE_MODEL_IDS:
         logger.error(f"Model {model_id} not found in available models")
         return None
     
+    # Check if we can load this model
+    while not can_load_model(model_id) and len(MODELS) > 0:
+        unloaded = unload_least_recently_used_model()
+        if unloaded is None:
+            break  # No more models to unload
+    
+    # Final check after potential unloading
+    if not can_load_model(model_id):
+        current_mem = estimate_total_model_memory()
+        required_mem = MODEL_MEMORY_ESTIMATES.get(model_id, 100)
+        logger.warning(f"⚠️  Cannot load {model_id}: would exceed memory limit ({current_mem + required_mem}MB > {MAX_MEMORY_MB}MB)")
+        return None
+    
     model_folder = os.path.join(MODELS_DIR, model_id)
     onnx_path = os.path.join(model_folder, "model.onnx")
     
     try:
-        logger.info(f"Loading model on-demand: {model_id}")
+        current_mem = estimate_total_model_memory()
+        logger.info(f"🧠 Loading model: {model_id} (current memory: {current_mem}MB)")
         sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
         meta = sess.get_inputs()[0]
         shape = meta.shape
@@ -186,7 +258,12 @@ def load_single_model(model_id: str):
             "input_shape": (H, W),
             "labels": labels,
         }
-        logger.info(f"✓ Loaded model: {model_id} ({display_name})")
+        
+        # Update usage tracker
+        update_model_usage(model_id)
+        
+        new_mem = estimate_total_model_memory()
+        logger.info(f"✅ Loaded model: {model_id} ({display_name}) - Total memory: {new_mem}MB")
         return MODELS[model_id]
     except Exception as e:
         logger.error(f"✗ Failed to load model {model_id}: {e}")
@@ -207,12 +284,22 @@ async def startup_event():
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with memory info"""
+    current_memory = get_memory_usage()
+    estimated_model_memory = estimate_total_model_memory()
+    
     return {
         "status": "ok",
         "models_available": len(AVAILABLE_MODEL_IDS),
         "models_loaded": len(MODELS),
-        "default_model": DEFAULT_MODEL_ID
+        "default_model": DEFAULT_MODEL_ID,
+        "memory": {
+            "current_mb": round(current_memory, 1),
+            "estimated_models_mb": estimated_model_memory,
+            "max_limit_mb": MAX_MEMORY_MB,
+            "max_concurrent_models": MAX_CONCURRENT_MODELS
+        },
+        "loaded_models": list(MODELS.keys())
     }
 
 @app.get("/debug")
@@ -228,6 +315,9 @@ def debug_info():
         except Exception as e:
             models_dir_contents = [f"Error: {e}"]
     
+    current_memory = get_memory_usage()
+    estimated_model_memory = estimate_total_model_memory()
+    
     return {
         "models_dir": MODELS_DIR,
         "models_dir_exists": models_dir_exists,
@@ -235,7 +325,15 @@ def debug_info():
         "available_models": AVAILABLE_MODEL_IDS,
         "models_currently_loaded": len(MODELS),
         "models_loaded_details": {mid: {"name": m.get("name"), "labels": len(m.get("labels", []))} for mid, m in MODELS.items()},
-        "default_model": DEFAULT_MODEL_ID
+        "default_model": DEFAULT_MODEL_ID,
+        "memory_management": {
+            "current_memory_mb": round(current_memory, 1),
+            "estimated_model_memory_mb": estimated_model_memory,
+            "max_memory_limit_mb": MAX_MEMORY_MB,
+            "max_concurrent_models": MAX_CONCURRENT_MODELS,
+            "model_memory_estimates": MODEL_MEMORY_ESTIMATES,
+            "usage_tracker": MODEL_USAGE_TRACKER
+        }
     }
 
 def preprocess_image(image: Image.Image, target_size=(224, 224)) -> np.ndarray:
@@ -263,6 +361,42 @@ def get_labels():
         return {"model_id": DEFAULT_MODEL_ID, "labels": MODELS[DEFAULT_MODEL_ID].get("labels", [])}
     return {"labels": None, "note": "No labels found; no models loaded."}
 
+
+@app.get("/memory")
+def memory_status():
+    """Get current memory status and loaded models"""
+    current_memory = get_memory_usage()
+    estimated_model_memory = estimate_total_model_memory()
+    
+    return {
+        "current_memory_mb": round(current_memory, 1),
+        "estimated_model_memory_mb": estimated_model_memory,
+        "max_memory_limit_mb": MAX_MEMORY_MB,
+        "memory_usage_percent": round((estimated_model_memory / MAX_MEMORY_MB) * 100, 1),
+        "loaded_models": list(MODELS.keys()),
+        "can_load_more": len(MODELS) < MAX_CONCURRENT_MODELS,
+        "model_memory_estimates": MODEL_MEMORY_ESTIMATES
+    }
+
+@app.post("/unload/{model_id}")
+def unload_model(model_id: str):
+    """Manually unload a specific model to free memory"""
+    if model_id not in MODELS:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Model {model_id} is not currently loaded"}
+        )
+    
+    del MODELS[model_id]
+    if model_id in MODEL_USAGE_TRACKER:
+        del MODEL_USAGE_TRACKER[model_id]
+    
+    logger.info(f"🗑️ Manually unloaded model: {model_id}")
+    return {
+        "message": f"Model {model_id} unloaded successfully",
+        "remaining_models": list(MODELS.keys()),
+        "estimated_memory_freed_mb": MODEL_MEMORY_ESTIMATES.get(model_id, 100)
+    }
 
 @app.get("/favicon.ico")
 def favicon():
@@ -314,15 +448,11 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
         
         # Check if model exists in filesystem
         if chosen and chosen not in AVAILABLE_MODEL_IDS:
-            reason = ""
-            if IS_PRODUCTION and chosen in MEMORY_INTENSIVE_MODELS:
-                reason = " (disabled in free tier - too memory intensive)"
             return JSONResponse(
                 status_code=400, 
                 content={
-                    "error": f"Model '{chosen}' not available{reason}", 
-                    "available_models": AVAILABLE_MODEL_IDS,
-                    "note": "Upgrade to Pro plan to use all models"
+                    "error": f"Model '{chosen}' not available", 
+                    "available_models": AVAILABLE_MODEL_IDS
                 }
             )
         

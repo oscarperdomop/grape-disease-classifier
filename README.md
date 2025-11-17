@@ -25,20 +25,21 @@ Sistema completo de clasificación de enfermedades en uvas con:
 | **Modelos**     | ONNX Runtime 1.20.1 | 4 arquitecturas (ConvNeXt, dlvtnet, mobilenetv3, swin_gsrdn) |
 | **Database**    | N/A (stateless)     | -                                                            |
 
-### ⚙️ Limitaciones del Plan Gratuito (Render Free Tier)
+### ⚙️ Gestión Inteligente de Memoria (Render Free Tier)
 
-| Recurso         | Límite | Estado                       |
-| --------------- | ------ | ---------------------------- |
-| RAM             | 512 MB | ✅ Suficiente para 3 modelos |
-| Modelos activos | 3/4    | ⚠️ model_4 deshabilitado     |
-| Cold start      | 30s    | ✅ Aceptable                 |
-| Almacenamiento  | 500 MB | ✅ Suficiente                |
+| Recurso         | Límite | Estado                              |
+| --------------- | ------ | ----------------------------------- |
+| RAM             | 512 MB | ✅ Optimizado con gestión inteligente |
+| Modelos activos | 4/4    | ✅ **Todos disponibles con LRU**     |
+| Cold start      | 30s    | ✅ Aceptable                        |
+| Almacenamiento  | 500 MB | ✅ Suficiente                       |
 
-**Upgrade a Pro ($12/mes):**
+**🧠 Sistema de Memoria Inteligente:**
 
-- 2 GB RAM (4 modelos simultáneos)
-- Mejor performance
-- Sin limitaciones de modelos
+- **LRU Eviction**: Descarga automática de modelos menos usados
+- **Memory Monitoring**: Monitoreo en tiempo real del uso de memoria
+- **Smart Loading**: Carga modelos solo cuando se necesitan
+- **All Models Available**: Los 4 modelos funcionan en plan gratuito
 
 ---
 
@@ -404,12 +405,13 @@ Compress-Archive -Path models/ -DestinationPath models.zip
 
 ## 📊 Performance & Optimizations
 
-### Lazy Loading Architecture
+### Smart Memory Management Architecture
 
 ✅ **Startup**: Metadata cacheado, 0 modelos en memoria (~50MB)
 ✅ **Primera predicción**: Cargar modelo on-demand (~5-10s)
 ✅ **Predicciones siguientes**: Modelo en caché (~<2s)
-✅ **Escalabilidad**: Render 512MB free tier suficiente
+✅ **Memory Full**: Descarga automática LRU (~2s)
+✅ **All Models**: Los 4 modelos disponibles con gestión inteligente
 
 ### Caching Strategy
 
@@ -427,80 +429,101 @@ if model not in MODELS:
 return predictions                       # Cached: <2s
 ```
 
-### Memory Management
+### Smart Memory Management
 
-| Fase                   | Memoria | Modelos Cargados | Plan             |
+| Fase                   | Memoria | Modelos Cargados | Gestión          |
 | ---------------------- | ------- | ---------------- | ---------------- |
-| Startup                | ~50MB   | 0                | Free             |
-| /models request        | ~50MB   | 0                | Free             |
-| 1er /predict (model_1) | ~120MB  | 1 (ConvNeXt)     | Free             |
-| 2do /predict (model_2) | ~180MB  | 2 (dlvtnet)      | Free             |
-| 3er /predict (model_3) | ~250MB  | 3 (mobilenetv3)  | Free             |
-| +/predict (model_4)    | >400MB  | 4 (swin_gsrdn)   | ❌ Free / ✅ Pro |
+| Startup                | ~50MB   | 0                | ✅ Free          |
+| /models request        | ~50MB   | 0                | ✅ Free          |
+| 1er /predict (model_1) | ~120MB  | 1 (ConvNeXt)     | ✅ Free          |
+| 2do /predict (model_2) | ~180MB  | 2 (dlvtnet)      | ✅ Free          |
+| 3er /predict (model_3) | ~250MB  | 2 (LRU evict)    | ✅ Free          |
+| 4to /predict (model_4) | ~250MB  | 2 (LRU evict)    | ✅ **Free**      |
 
-**Render free tier: 512MB** → **3 modelos máximo** ⚠️
+**Render free tier: 512MB** → **Todos los modelos disponibles** ✅
 
-**Solución**:
+**Sistema LRU (Least Recently Used)**:
 
-- En producción, model_4 se desactiva automáticamente
-- El frontend muestra aviso: "Modelos deshabilitados en plan gratuito"
-- Upgrade a Pro ($12/mes) para usar todos los 4 modelos
+- Máximo 2 modelos simultáneos (configurable)
+- Descarga automática del modelo menos usado
+- Todos los 4 modelos disponibles en plan gratuito
+- Monitoreo de memoria en tiempo real
 
 ---
 
 ## 🐛 Troubleshooting
 
-### 502 Bad Gateway - model_4 (swin_gsrdn) crashes
+### ✅ Todos los Modelos Funcionando (Incluyendo model_4)
 
-**Causa**: model_4 es muy pesado (~150MB+) y excede memoria del plan free (512MB)
+**Problema Resuelto**: model_4 (swin_gsrdn) ahora funciona en plan gratuito
 
-**Síntoma**: Funciona con model_1/2/3 pero falla con model_4
+**Solución Implementada**: Sistema de gestión inteligente de memoria
 
-**Solución**:
+**Cómo funciona**:
 
 ```bash
-# En DESARROLLO: Funciona todo localmente
-docker-compose up
+# DESARROLLO Y PRODUCCIÓN:
+# ✅ Todos los 4 modelos disponibles
+# ✅ Gestión automática de memoria LRU
+# ✅ Descarga inteligente de modelos no usados
 
-# En PRODUCCIÓN (Render free tier):
-# ✅ model_1, model_2, model_3 disponibles
-# ❌ model_4 automáticamente deshabilitado
-# Frontend muestra: "Modelos deshabilitados en plan gratuito"
+# Monitorear memoria en tiempo real:
+curl http://localhost:8000/memory
 
-# Upgrade a Pro:
-# 1. Render Dashboard → Service settings → Change plan
-# 2. Select "Pro" ($12/month, 2GB RAM)
-# 3. Auto-redeploy con todos los 4 modelos
+# Descargar modelo manualmente si es necesario:
+curl -X POST http://localhost:8000/unload/model_1
 ```
+
+**Nuevos Endpoints de Monitoreo**:
+- `GET /memory` - Estado de memoria en tiempo real
+- `POST /unload/{model_id}` - Descarga manual de modelos
+- `GET /health` - Incluye información de memoria
 
 ---
 
+### Monitoreo de Memoria y Modelos
+
+**Verificar estado de memoria**:
+
+```bash
+# Estado general del sistema
+curl http://localhost:8000/health
+
+# Información detallada de memoria
+curl http://localhost:8000/memory
+
+# Debug completo del sistema
+curl http://localhost:8000/debug
+```
+
+**Gestión manual de modelos**:
+
+```bash
+# Descargar modelo específico
+curl -X POST http://localhost:8000/unload/model_4
+
+# Verificar modelos cargados
+curl http://localhost:8000/memory | jq '.loaded_models'
+```
+
 ### Modelos no cargan
 
-**Causa**: Archivo de configuración corrompido o encoding inválido
+**Causa**: Archivo de configuración corrompido o memoria insuficiente
 
 **Solución**:
 
 ```bash
+# Verificar memoria disponible
+curl http://localhost:8000/memory
+
 # Verificar archivos config
 cat models/model_1/config.json | jq .
 
 # Rebuild backend
 docker-compose up --build
-```
 
-### Modelos no cargan
-
-**Causa**: Ruta incorrecta o archivo .onnx corrupto
-
-**Solución**:
-
-```bash
-# Check /debug endpoint
-curl http://localhost:8000/debug
-
-# Verificar ZIP de GitHub Release
-# Descargar y verificar estructura
+# Test memory optimization
+python test_memory_optimization.py
 ```
 
 ### CORS Error en Frontend

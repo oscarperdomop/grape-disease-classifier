@@ -79,22 +79,13 @@ export default function App() {
         const list = data.models || [];
         const available = data.available || [];
 
-        // Detectar modelos deshabilitados
-        const unavailable = data.models
-          ? data.models
-              .filter((m) => !available.includes(m.id))
-              .map((m) => m.id)
-          : [];
-
+        // All models are now available with smart memory management
         setModels(list);
-        setUnavailableModels(unavailable);
-
-        if (unavailable.length > 0) {
-          setError(
-            `⚠️ Modelos deshabilitados en plan gratuito: ${unavailable.join(
-              ", "
-            )} (Upgrade a Pro para usarlos)`
-          );
+        setUnavailableModels([]);
+        
+        // Show memory management info if available
+        if (data.memory) {
+          console.log('Memory info:', data.memory);
         }
 
         if (data.default && !selectedModel) {
