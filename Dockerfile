@@ -37,9 +37,9 @@ RUN python /app/backend/scripts/download_models.py
 # Exponer puerto
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+# Health check with longer timeout for model loading
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=10)"
 
-# Comando para iniciar
-CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Comando para iniciar con timeout aumentado
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "75"]

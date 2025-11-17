@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 logger.info("Starting FastAPI application...")
 
-# Enable CORS for frontend
+# Enable CORS for frontend (local y producción)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -77,7 +77,6 @@ def get_memory_usage():
         process = psutil.Process(os.getpid())
         return process.memory_info().rss / 1024 / 1024
     except ImportError:
-        # Fallback if psutil not available
         return 0
 
 def estimate_total_model_memory():
@@ -92,11 +91,9 @@ def can_load_model(model_id: str):
     current_memory = estimate_total_model_memory()
     new_model_memory = MODEL_MEMORY_ESTIMATES.get(model_id, 100)
     
-    # Check if adding this model would exceed limits
     if current_memory + new_model_memory > MAX_MEMORY_MB:
         return False
     
-    # Check concurrent model limit
     if len(MODELS) >= MAX_CONCURRENT_MODELS and model_id not in MODELS:
         return False
         
@@ -107,7 +104,6 @@ def unload_least_recently_used_model():
     if not MODELS or not MODEL_USAGE_TRACKER:
         return None
         
-    # Find least recently used model
     lru_model = min(MODEL_USAGE_TRACKER.items(), key=lambda x: x[1])
     model_id = lru_model[0]
     
@@ -130,7 +126,6 @@ def get_model_metadata(model_id: str):
     
     model_folder = os.path.join(MODELS_DIR, model_id)
     
-    # Try to load labels from config files
     for cfg_name in ("config.json", "config_base.json"):
         cfg_path = os.path.join(model_folder, cfg_name)
         if os.path.exists(cfg_path):
@@ -155,7 +150,7 @@ def get_model_metadata(model_id: str):
     }
 
 def discover_models():
-    """Scan MODELS_DIR and list available models WITHOUT loading them (lazy loading)"""
+    """Scan MODELS_DIR and list available models WITHOUT loading them"""
     global DEFAULT_MODEL_ID, AVAILABLE_MODEL_IDS, MODEL_METADATA_CACHE
     logger.info(f"Scanning models directory: {MODELS_DIR}")
     logger.info(f"Environment: {'PRODUCTION' if IS_PRODUCTION else 'DEVELOPMENT'}")
@@ -172,9 +167,7 @@ def discover_models():
             continue
         onnx_path = os.path.join(model_folder, "model.onnx")
         if os.path.exists(onnx_path):
-            # All models are now available with smart memory management
             AVAILABLE_MODEL_IDS.append(entry)
-            # Pre-load metadata at startup to avoid slow /models requests
             MODEL_METADATA_CACHE[entry] = get_model_metadata(entry)
             if DEFAULT_MODEL_ID is None:
                 DEFAULT_MODEL_ID = entry
@@ -185,20 +178,18 @@ def discover_models():
 def load_single_model(model_id: str):
     """Load a single model on-demand with smart memory management"""
     if model_id in MODELS:
-        update_model_usage(model_id)  # Update usage tracker
-        return MODELS[model_id]  # Already loaded
+        update_model_usage(model_id)
+        return MODELS[model_id]
     
     if model_id not in AVAILABLE_MODEL_IDS:
         logger.error(f"Model {model_id} not found in available models")
         return None
     
-    # Check if we can load this model
     while not can_load_model(model_id) and len(MODELS) > 0:
         unloaded = unload_least_recently_used_model()
         if unloaded is None:
-            break  # No more models to unload
+            break
     
-    # Final check after potential unloading
     if not can_load_model(model_id):
         current_mem = estimate_total_model_memory()
         required_mem = MODEL_MEMORY_ESTIMATES.get(model_id, 100)
@@ -217,7 +208,6 @@ def load_single_model(model_id: str):
         H = safe_int(shape[2]) or 224
         W = safe_int(shape[3]) or 224
         
-        # load labels from config.json or config_base.json if present
         labels = []
         for cfg_name in ("config.json", "config_base.json"):
             cfg_path = os.path.join(model_folder, cfg_name)
@@ -234,7 +224,6 @@ def load_single_model(model_id: str):
                 except Exception:
                     labels = []
 
-        # display name from metadata.json optional
         display_name = model_id
         metadata_path = os.path.join(model_folder, "metadata.json")
         if os.path.exists(metadata_path):
@@ -245,7 +234,6 @@ def load_single_model(model_id: str):
             except Exception:
                 pass
         
-        # override with our friendly names when available
         display_name = MODEL_DISPLAY_MAP.get(model_id, display_name)
 
         MODELS[model_id] = {
@@ -258,7 +246,6 @@ def load_single_model(model_id: str):
             "labels": labels,
         }
         
-        # Update usage tracker
         update_model_usage(model_id)
         
         new_mem = estimate_total_model_memory()
@@ -336,15 +323,12 @@ def debug_info():
     }
 
 def preprocess_image(image: Image.Image, target_size=(224, 224)) -> np.ndarray:
-    # Convert to RGB, resize, normalize to float32, CHW
     image = image.convert("RGB")
     image = image.resize(target_size, Image.BILINEAR)
     arr = np.asarray(image).astype(np.float32) / 255.0
-    # default mean/std (ImageNet) — these are sensible defaults for ConvNeXt-style models
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     arr = (arr - mean) / std
-    # HWC -> CHW
     arr = np.transpose(arr, (2, 0, 1))
     arr = np.expand_dims(arr, axis=0)
     return arr
@@ -355,11 +339,9 @@ def softmax(x: np.ndarray) -> np.ndarray:
 
 @app.get("/labels")
 def get_labels():
-    # return labels for default model
     if DEFAULT_MODEL_ID and DEFAULT_MODEL_ID in MODELS:
         return {"model_id": DEFAULT_MODEL_ID, "labels": MODELS[DEFAULT_MODEL_ID].get("labels", [])}
     return {"labels": None, "note": "No labels found; no models loaded."}
-
 
 @app.get("/memory")
 def memory_status():
@@ -402,35 +384,29 @@ def favicon():
     """Return empty favicon response so CRA dev-server proxy requests don't fail with ECONNREFUSED."""
     return Response(status_code=204)
 
-
 @app.get("/models")
 def list_models():
     """Return list of ALL available models - uses cached metadata for speed"""
     try:
-        # Load default model if not already loaded to populate labels
         if DEFAULT_MODEL_ID and DEFAULT_MODEL_ID not in MODELS:
             load_single_model(DEFAULT_MODEL_ID)
         
-        # Return all models using cached metadata
         out = []
         for mid in AVAILABLE_MODEL_IDS:
             if mid in MODEL_METADATA_CACHE:
                 out.append(MODEL_METADATA_CACHE[mid])
             else:
-                # Fallback (shouldn't happen if discover_models ran)
                 out.append(get_model_metadata(mid))
         
         return {"models": out, "default": DEFAULT_MODEL_ID, "available": AVAILABLE_MODEL_IDS}
     except Exception as e:
         logger.error(f"Error in /models endpoint: {e}", exc_info=True)
-        # Return at least the available model IDs even if metadata fails
         return {
             "models": [{"id": mid, "name": MODEL_DISPLAY_MAP.get(mid, mid)} for mid in AVAILABLE_MODEL_IDS],
             "default": DEFAULT_MODEL_ID,
             "available": AVAILABLE_MODEL_IDS,
             "error": str(e)
         }
-
 
 @app.post("/predict")
 async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int = 4):
@@ -442,10 +418,8 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
             logger.error(f"Failed to open image: {e}")
             return JSONResponse(status_code=400, content={"error": "Invalid image file", "detail": str(e)})
         
-        # choose model
         chosen = model_id or DEFAULT_MODEL_ID
         
-        # Check if model exists in filesystem
         if chosen and chosen not in AVAILABLE_MODEL_IDS:
             return JSONResponse(
                 status_code=400, 
@@ -458,7 +432,6 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
         if not chosen:
             return JSONResponse(status_code=400, content={"error": "No model_id provided and no default available"})
 
-        # Load model on-demand if not already loaded
         if chosen not in MODELS:
             load_single_model(chosen)
         
@@ -471,17 +444,15 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
         session = model.get("session")
 
         arr = preprocess_image(image, target_size=(H or 224, W or 224))
-        # ONNX expects float32
         arr = arr.astype(np.float32)
         inputs = {input_name: arr}
         preds = session.run(None, inputs)[0]
-        # preds shape: (1, num_classes) or similar
+        
         if preds.ndim == 2:
             probs = softmax(preds[0])
         elif preds.ndim == 1:
             probs = softmax(preds)
         else:
-            # flatten and softmax
             probs = softmax(preds.ravel())
 
         top_idx = np.argsort(probs)[-top_k:][::-1]
