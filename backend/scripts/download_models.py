@@ -55,6 +55,7 @@ def download_models(download_url):
     try:
         import zipfile
         import tempfile
+        import shutil
         
         logger.info(f"Downloading models from: {download_url}")
         
@@ -64,20 +65,73 @@ def download_models(download_url):
             
         # Descargar
         urllib.request.urlretrieve(download_url, tmp_path)
-        logger.info(f"Downloaded to {tmp_path}")
+        file_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+        logger.info(f"Downloaded to {tmp_path} ({file_size_mb:.1f} MB)")
         
-        # Extraer
-        logger.info(f"Extracting to {MODELS_DIR}")
+        # Crear directorio de extracción temporal
+        extract_temp = Path(tempfile.gettempdir()) / "models_extract"
+        if extract_temp.exists():
+            shutil.rmtree(extract_temp)
+        extract_temp.mkdir(parents=True)
+        
+        # Extraer TODO
+        logger.info(f"Extracting ZIP to temporary directory: {extract_temp}")
         with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
-            zip_ref.extractall(MODELS_DIR)
+            zip_ref.extractall(extract_temp)
         
-        # Limpiar archivo temporal
+        # Listar contenido extraído
+        logger.info(f"Contents extracted:")
+        for item in sorted(extract_temp.rglob("*")):
+            if item.is_file():
+                logger.info(f"  FILE: {item.relative_to(extract_temp)}")
+            else:
+                logger.info(f"  DIR:  {item.relative_to(extract_temp)}")
+        
+        # Buscar carpeta "models"
+        models_source = extract_temp / "models"
+        
+        if not models_source.exists():
+            logger.error(f"Models folder not found at {models_source}")
+            logger.error("Available directories:")
+            for item in extract_temp.iterdir():
+                logger.error(f"  {item.name}")
+            return False
+        
+        # Copiar todos los archivos de modelos
+        logger.info(f"Copying models from {models_source} to {MODELS_DIR}")
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Limpiar MODELS_DIR primero
+        for item in MODELS_DIR.iterdir():
+            if item.name != ".gitkeep":
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+        
+        # Copiar carpetas de modelos
+        copy_count = 0
+        for model_folder in models_source.iterdir():
+            if model_folder.is_dir():
+                dest = MODELS_DIR / model_folder.name
+                shutil.copytree(model_folder, dest)
+                logger.info(f"  ✓ Copied {model_folder.name}")
+                copy_count += 1
+        
+        if copy_count == 0:
+            logger.error("No model folders found to copy")
+            return False
+        
+        # Limpiar temporales
         os.remove(tmp_path)
-        logger.info("✓ Models downloaded and extracted successfully")
+        shutil.rmtree(extract_temp)
+        logger.info(f"✓ Models downloaded and extracted successfully ({copy_count} folders)")
         return True
     
     except Exception as e:
         logger.error(f"Failed to download/extract models: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 def check_models():
@@ -117,18 +171,21 @@ def main():
     if not download_url:
         logger.warning("Could not get download URL. Models may not be available.")
         logger.warning("Ensure you have created a GitHub Release with model files.")
-        return 1
+        logger.info("Continuing without models (API will start but predictions may fail)")
+        return 0  # No es error crítico
     
     # Descargar
     if not download_models(download_url):
         logger.error("Failed to download models")
-        return 1
+        logger.warning("Continuing without models (API will start but predictions may fail)")
+        return 0  # No es error crítico
     
     # Verificar descarga
     final_count = check_models()
     if final_count == 0:
         logger.error("No models found after download")
-        return 1
+        logger.warning("Continuing without models (API will start but predictions may fail)")
+        return 0  # No es error crítico
     
     logger.info("=" * 60)
     logger.info("✓ Script completed successfully")
