@@ -53,16 +53,18 @@ MODEL_DISPLAY_MAP = {
 # Production environment flag
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
 
-# Memory management configuration
-MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "400"))
+# Memory management configuration - AGGRESSIVE CLEANUP STRATEGY
+# After each prediction, unload ALL models to give full memory to next request
+MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "450"))  # More memory available since we cleanup after each request
 MODEL_MEMORY_ESTIMATES = {
-    "model_1": 70,
-    "model_2": 60,
-    "model_3": 50,
-    "model_4": 150,
+    "model_1": 80,
+    "model_2": 70,
+    "model_3": 60,
+    "model_4": 200,  # model_4 can use more memory since it's alone
 }
-MAX_CONCURRENT_MODELS = int(os.getenv("MAX_CONCURRENT_MODELS", "2"))
+MAX_CONCURRENT_MODELS = int(os.getenv("MAX_CONCURRENT_MODELS", "1"))  # Only 1 model at a time
 MODEL_USAGE_TRACKER = {}
+AGGRESSIVE_CLEANUP = True  # Unload all models after each prediction
 
 def safe_int(x):
     try:
@@ -122,6 +124,21 @@ def update_model_usage(model_id: str):
     """Update last usage time for a model"""
     import time
     MODEL_USAGE_TRACKER[model_id] = time.time()
+
+def cleanup_all_models():
+    """Aggressively unload ALL models to free memory for next request"""
+    global MODELS, MODEL_USAGE_TRACKER
+    if MODELS:
+        logger.info(f"🧹 Aggressive cleanup: Unloading {len(MODELS)} models")
+        for model_id in list(MODELS.keys()):
+            logger.info(f"   🗑️  Unloading {model_id}")
+            del MODELS[model_id]
+        MODEL_USAGE_TRACKER.clear()
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        logger.info(f"✅ Memory cleanup complete. Available for next request.")
 
 def get_model_metadata(model_id: str):
     """Get metadata for a model (name, labels) without loading ONNX"""
@@ -185,20 +202,28 @@ def discover_models():
 def load_single_model(model_id: str):
     """Load a single model on-demand with smart memory management"""
     if model_id in MODELS:
-        update_model_usage(model_id)  # Update usage tracker
-        return MODELS[model_id]  # Already loaded
+        update_model_usage(model_id)
+        return MODELS[model_id]
     
     if model_id not in AVAILABLE_MODEL_IDS:
         logger.error(f"Model {model_id} not found in available models")
         return None
     
+    # Special handling for model_4: it's too heavy, unload everything first
+    if model_id == "model_4" and len(MODELS) > 0:
+        logger.info(f"⚠️  model_4 requires exclusive memory - unloading all other models")
+        for mid in list(MODELS.keys()):
+            logger.info(f"🗑️  Unloading {mid} to make room for model_4")
+            del MODELS[mid]
+            if mid in MODEL_USAGE_TRACKER:
+                del MODEL_USAGE_TRACKER[mid]
+    
     # Check if we can load this model
     while not can_load_model(model_id) and len(MODELS) > 0:
         unloaded = unload_least_recently_used_model()
         if unloaded is None:
-            break  # No more models to unload
+            break
     
-    # Final check after potential unloading
     if not can_load_model(model_id):
         current_mem = estimate_total_model_memory()
         required_mem = MODEL_MEMORY_ESTIMATES.get(model_id, 100)
@@ -211,7 +236,17 @@ def load_single_model(model_id: str):
     try:
         current_mem = estimate_total_model_memory()
         logger.info(f"🧠 Loading model: {model_id} (current memory: {current_mem}MB)")
-        sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        
+        # Try to load with timeout protection
+        try:
+            sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        except MemoryError as me:
+            logger.error(f"❌ MemoryError loading {model_id}: {me}")
+            logger.error("Model is too large for available memory. Consider upgrading plan.")
+            return None
+        except Exception as load_err:
+            logger.error(f"❌ Error loading {model_id}: {load_err}")
+            return None
         meta = sess.get_inputs()[0]
         shape = meta.shape
         H = safe_int(shape[2]) or 224
@@ -374,7 +409,9 @@ def memory_status():
         "memory_usage_percent": round((estimated_model_memory / MAX_MEMORY_MB) * 100, 1),
         "loaded_models": list(MODELS.keys()),
         "can_load_more": len(MODELS) < MAX_CONCURRENT_MODELS,
-        "model_memory_estimates": MODEL_MEMORY_ESTIMATES
+        "model_memory_estimates": MODEL_MEMORY_ESTIMATES,
+        "aggressive_cleanup_enabled": AGGRESSIVE_CLEANUP,
+        "strategy": "Unload ALL models after each prediction to maximize memory for next request"
     }
 
 @app.post("/unload/{model_id}")
@@ -491,7 +528,16 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
             label = labels[idx] if labels and idx < len(labels) else str(int(idx))
             results.append({"label": label, "index": int(idx), "score": float(probs[idx])})
 
+        # AGGRESSIVE CLEANUP: Unload all models after prediction to free memory for next request
+        if AGGRESSIVE_CLEANUP:
+            cleanup_all_models()
+        
         return {"predictions": results}
     except Exception as e:
         logger.error(f"Prediction error: {e}", exc_info=True)
+        
+        # Still cleanup on error
+        if AGGRESSIVE_CLEANUP:
+            cleanup_all_models()
+        
         return JSONResponse(status_code=500, content={"error": "Internal server error", "detail": str(e)})

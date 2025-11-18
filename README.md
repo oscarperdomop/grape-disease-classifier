@@ -25,21 +25,22 @@ Sistema completo de clasificación de enfermedades en uvas con:
 | **Modelos**     | ONNX Runtime 1.20.1 | 4 arquitecturas (ConvNeXt, dlvtnet, mobilenetv3, swin_gsrdn) |
 | **Database**    | N/A (stateless)     | -                                                            |
 
-### ⚙️ Gestión Inteligente de Memoria (Render Free Tier)
+### ⚙️ Gestión Agresiva de Memoria (Render Free Tier)
 
 | Recurso         | Límite | Estado                              |
 | --------------- | ------ | ----------------------------------- |
-| RAM             | 512 MB | ✅ Optimizado con gestión inteligente |
-| Modelos activos | 4/4    | ✅ **Todos disponibles con LRU**     |
+| RAM             | 512 MB | ✅ Optimizado con limpieza agresiva |
+| Modelos activos | 4/4    | ✅ **Todos disponibles**             |
 | Cold start      | 30s    | ✅ Aceptable                        |
 | Almacenamiento  | 500 MB | ✅ Suficiente                       |
 
-**🧠 Sistema de Memoria Inteligente:**
+**🧠 Estrategia de Memoria Agresiva:**
 
-- **LRU Eviction**: Descarga automática de modelos menos usados
-- **Memory Monitoring**: Monitoreo en tiempo real del uso de memoria
-- **Smart Loading**: Carga modelos solo cuando se necesitan
-- **All Models Available**: Los 4 modelos funcionan en plan gratuito
+- **Cleanup After Each Request**: Descarga TODOS los modelos después de cada predicción
+- **Full Memory Per Request**: Cada petición obtiene acceso a toda la memoria disponible (~450MB)
+- **Automatic Garbage Collection**: Limpieza automática de memoria entre peticiones
+- **All Models Available**: Los 4 modelos funcionan sin conflictos de memoria
+- **No Concurrent Models**: Solo 1 modelo cargado a la vez (por petición)
 
 ---
 
