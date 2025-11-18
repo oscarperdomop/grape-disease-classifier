@@ -28,7 +28,16 @@ def get_download_url():
     """Obtiene la URL de descarga desde la última Release de GitHub"""
     try:
         logger.info(f"Fetching latest release info from {GITHUB_API_URL}")
-        with urllib.request.urlopen(GITHUB_API_URL, timeout=10) as response:
+        
+        # Usar GitHub token si está disponible (para evitar rate limits)
+        github_token = os.getenv("GITHUB_TOKEN")
+        headers = {}
+        if github_token:
+            headers["Authorization"] = f"token {github_token}"
+            logger.info("Using GitHub token for authentication")
+        
+        req = urllib.request.Request(GITHUB_API_URL, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             
         if "assets" not in data or len(data["assets"]) == 0:
@@ -43,6 +52,13 @@ def get_download_url():
         logger.warning("No models zip file found in release assets")
         return None
     
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            logger.error(f"GitHub API rate limit exceeded: {e}")
+            logger.error("Set GITHUB_TOKEN environment variable to increase rate limit")
+        else:
+            logger.error(f"Failed to fetch release info: {e}")
+        return None
     except urllib.error.URLError as e:
         logger.error(f"Failed to fetch release info: {e}")
         return None

@@ -631,9 +631,10 @@ MIT License - See LICENSE file
 
 ---
 
-## 👨‍💻 Author
+## 👨‍💻 Autores
 
 **Oscar Perdomo** - GitHub: [@oscarperdomop](https://github.com/oscarperdomop)
+**Esteban Escobar** - GitHub: [@EstebanEscobar19](https://github.com/EstebanEscobar19)
 
 ---
 

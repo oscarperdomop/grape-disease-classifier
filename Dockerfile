@@ -32,6 +32,9 @@ COPY backend/ ./backend/
 COPY models/ ./models/
 
 # Descargar modelos desde GitHub Releases si no existen
+# Use build arg for GitHub token to avoid rate limits
+ARG GITHUB_TOKEN
+ENV GITHUB_TOKEN=${GITHUB_TOKEN}
 RUN python /app/backend/scripts/download_models.py
 
 # Exponer puerto
