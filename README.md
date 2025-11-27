@@ -42,6 +42,22 @@ Sistema completo de clasificación de enfermedades en uvas con:
 - **All Models Available**: Los 4 modelos funcionan sin conflictos de memoria
 - **No Concurrent Models**: Solo 1 modelo cargado a la vez (por petición)
 
+### 🔍 Validación de Imágenes (Validator Model)
+
+**Nuevo**: Modelo binario que valida si la imagen es una **hoja de uva** antes de procesarla:
+
+- **Paso 1**: Imagen sube al servidor
+- **Paso 2**: Validator Model verifica si es hoja de uva
+  - ✅ **SÍ** → Continúa a clasificadores de enfermedad
+  - ❌ **NO** → Retorna error "Image is not in scope"
+- **Paso 3**: Clasificación de enfermedad (si pasó validación)
+
+**Beneficios:**
+- Rechaza imágenes fuera de alcance (carros, personas, edificios, etc.)
+- Mejora precisión general del sistema
+- Mejor experiencia de usuario con mensajes claros
+- Configurable: threshold ajustable (0.3 - 0.7)
+
 ---
 
 ## 🏗️ Arquitectura & Estructura
@@ -257,9 +273,31 @@ Lista todos los modelos disponibles con metadatos.
 
 ---
 
+#### `GET /validator`
+
+Información sobre el modelo validador de imágenes.
+
+**Response:**
+
+```json
+{
+  "validator_enabled": true,
+  "validator_model_id": "validator",
+  "validator_threshold": 0.5,
+  "description": "Binary classifier that validates if image is a grape leaf",
+  "usage": "Automatically runs before disease classification"
+}
+```
+
+---
+
 #### `POST /predict`
 
 Realizar predicción sobre una imagen.
+
+**Flujo:**
+1. Valida si es hoja de uva (validator model)
+2. Si es válida, clasifica enfermedad (model_1/2/3/4)
 
 **Parameters:**
 
@@ -274,7 +312,7 @@ curl -X POST "https://api.example.com/predict?model_id=model_1&top_k=5" \
   -F "file=@leaf.jpg"
 ```
 
-**Response:**
+**Response (Válida):**
 
 ```json
 {
@@ -290,6 +328,17 @@ curl -X POST "https://api.example.com/predict?model_id=model_1&top_k=5" \
       "score": 0.062
     }
   ]
+}
+```
+
+**Response (Inválida - No es hoja de uva):**
+
+```json
+{
+  "error": "Image is not in scope",
+  "message": "The image does not appear to be a grape leaf",
+  "validation_confidence": 0.23,
+  "note": "Please provide an image of a grape leaf for analysis"
 }
 ```
 
