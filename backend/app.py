@@ -41,6 +41,7 @@ MODELS = {}
 DEFAULT_MODEL_ID = None
 AVAILABLE_MODEL_IDS = []
 MODEL_METADATA_CACHE = {}
+VALIDATOR_MODEL = None  # Validation model to check if image is grape leaf
 
 # Human-friendly names for known folders
 MODEL_DISPLAY_MAP = {
@@ -49,6 +50,10 @@ MODEL_DISPLAY_MAP = {
     "model_3": "mobilenetv3",
     "model_4": "swin_gsrdn",
 }
+
+# Validation model configuration
+VALIDATOR_MODEL_ID = "validator"  # Special model for image validation
+VALIDATOR_MODEL_THRESHOLD = 0.5  # Confidence threshold for accepting as grape leaf
 
 # Production environment flag
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
@@ -125,20 +130,94 @@ def update_model_usage(model_id: str):
     import time
     MODEL_USAGE_TRACKER[model_id] = time.time()
 
+def load_validator_model():
+    """Load the validation model to check if image is a grape leaf"""
+    global VALIDATOR_MODEL
+    
+    if VALIDATOR_MODEL is not None:
+        return VALIDATOR_MODEL
+    
+    validator_folder = os.path.join(MODELS_DIR, VALIDATOR_MODEL_ID)
+    validator_path = os.path.join(validator_folder, "model.onnx")
+    
+    if not os.path.exists(validator_path):
+        logger.warning(f"⚠️  Validator model not found at {validator_path}")
+        return None
+    
+    try:
+        logger.info(f"🔍 Loading validator model...")
+        sess = ort.InferenceSession(validator_path, providers=["CPUExecutionProvider"])
+        meta = sess.get_inputs()[0]
+        shape = meta.shape
+        H = safe_int(shape[2]) or 224
+        W = safe_int(shape[3]) or 224
+        
+        VALIDATOR_MODEL = {
+            "session": sess,
+            "input_name": meta.name,
+            "input_shape": (H, W),
+        }
+        logger.info(f"✅ Validator model loaded successfully")
+        return VALIDATOR_MODEL
+    except Exception as e:
+        logger.error(f"❌ Failed to load validator model: {e}")
+        return None
+
+def validate_grape_leaf(image: Image.Image) -> tuple[bool, float]:
+    """
+    Validate if image is a grape leaf using validator model
+    Returns: (is_valid, confidence)
+    """
+    if VALIDATOR_MODEL is None:
+        logger.warning("Validator model not loaded, skipping validation")
+        return True, 1.0  # If no validator, accept image
+    
+    try:
+        H, W = VALIDATOR_MODEL.get("input_shape", (224, 224))
+        input_name = VALIDATOR_MODEL.get("input_name")
+        session = VALIDATOR_MODEL.get("session")
+        
+        arr = preprocess_image(image, target_size=(H or 224, W or 224))
+        arr = arr.astype(np.float32)
+        inputs = {input_name: arr}
+        preds = session.run(None, inputs)[0]
+        
+        # Assuming binary classification: [not_grape, is_grape]
+        if preds.ndim == 2:
+            probs = softmax(preds[0])
+        elif preds.ndim == 1:
+            probs = softmax(preds)
+        else:
+            probs = softmax(preds.ravel())
+        
+        # Get confidence for "is grape leaf" class (usually index 1)
+        grape_confidence = float(probs[-1])  # Last class is typically positive
+        is_valid = grape_confidence >= VALIDATOR_MODEL_THRESHOLD
+        
+        logger.info(f"🔍 Validation result: {'✅ Valid' if is_valid else '❌ Invalid'} (confidence: {grape_confidence:.2%})")
+        return is_valid, grape_confidence
+    
+    except Exception as e:
+        logger.error(f"❌ Validation error: {e}")
+        return True, 1.0  # On error, accept image (fail-safe)
+
 def cleanup_all_models():
     """Aggressively unload ALL models to free memory for next request"""
-    global MODELS, MODEL_USAGE_TRACKER
+    global MODELS, MODEL_USAGE_TRACKER, VALIDATOR_MODEL
     if MODELS:
         logger.info(f"🧹 Aggressive cleanup: Unloading {len(MODELS)} models")
         for model_id in list(MODELS.keys()):
             logger.info(f"   🗑️  Unloading {model_id}")
             del MODELS[model_id]
         MODEL_USAGE_TRACKER.clear()
-        
-        # Force garbage collection
-        import gc
-        gc.collect()
-        logger.info(f"✅ Memory cleanup complete. Available for next request.")
+    
+    # Keep validator model loaded (it's small and needed for every request)
+    # Only unload other models
+    
+    # Force garbage collection
+    import gc
+    gc.collect()
+    logger.info(f"✅ Memory cleanup complete. Available for next request.")
 
 def get_model_metadata(model_id: str):
     """Get metadata for a model (name, labels) without loading ONNX"""
@@ -315,6 +394,8 @@ except Exception as e:
 @app.on_event("startup")
 async def startup_event():
     logger.info("FastAPI startup complete. Ready to serve requests.")
+    # Load validator model at startup (it stays in memory)
+    load_validator_model()
 
 @app.get("/health")
 def health_check():
@@ -396,6 +477,21 @@ def get_labels():
     return {"labels": None, "note": "No labels found; no models loaded."}
 
 
+@app.get("/validator")
+def validator_info():
+    """Get information about the validator model"""
+    return {
+        "validator_enabled": VALIDATOR_MODEL is not None,
+        "validator_model_id": VALIDATOR_MODEL_ID,
+        "validator_threshold": VALIDATOR_MODEL_THRESHOLD,
+        "description": "Binary classifier that validates if image is a grape leaf",
+        "usage": "Automatically runs before disease classification",
+        "response_on_invalid": {
+            "error": "Image is not in scope",
+            "message": "The image does not appear to be a grape leaf"
+        }
+    }
+
 @app.get("/memory")
 def memory_status():
     """Get current memory status and loaded models"""
@@ -408,6 +504,7 @@ def memory_status():
         "max_memory_limit_mb": MAX_MEMORY_MB,
         "memory_usage_percent": round((estimated_model_memory / MAX_MEMORY_MB) * 100, 1),
         "loaded_models": list(MODELS.keys()),
+        "validator_loaded": VALIDATOR_MODEL is not None,
         "can_load_more": len(MODELS) < MAX_CONCURRENT_MODELS,
         "model_memory_estimates": MODEL_MEMORY_ESTIMATES,
         "aggressive_cleanup_enabled": AGGRESSIVE_CLEANUP,
@@ -495,7 +592,21 @@ async def predict(model_id: str = None, file: UploadFile = File(...), top_k: int
         if not chosen:
             return JSONResponse(status_code=400, content={"error": "No model_id provided and no default available"})
 
-        # Load model on-demand if not already loaded
+        # STEP 1: Validate if image is a grape leaf
+        is_valid, validation_confidence = validate_grape_leaf(image)
+        if not is_valid:
+            logger.warning(f"⚠️  Image rejected by validator (confidence: {validation_confidence:.2%})")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Image is not in scope",
+                    "message": "The image does not appear to be a grape leaf",
+                    "validation_confidence": round(validation_confidence, 4),
+                    "note": "Please provide an image of a grape leaf for analysis"
+                }
+            )
+
+        # STEP 2: Load model on-demand if not already loaded
         if chosen not in MODELS:
             load_single_model(chosen)
         
