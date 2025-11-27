@@ -70,6 +70,8 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState(null);
   const [unavailableModels, setUnavailableModels] = useState([]);
   const [error, setError] = useState(null);
+  const [validatorInfo, setValidatorInfo] = useState(null);
+  const [validationError, setValidationError] = useState(null);
 
   useEffect(() => {
     const loadModels = async () => {
@@ -100,7 +102,21 @@ export default function App() {
         );
       }
     };
+
+    const loadValidatorInfo = async () => {
+      try {
+        const res = await fetch(`${API_URL}/validator`);
+        const data = await res.json();
+        setValidatorInfo(data);
+        console.log('Validator info:', data);
+      } catch (err) {
+        console.warn("Could not load validator info:", err);
+        setValidatorInfo(null);
+      }
+    };
+
     loadModels();
+    loadValidatorInfo();
   }, []);
 
   useEffect(() => {
@@ -121,6 +137,7 @@ export default function App() {
     setIsLoading(true);
     setPredictions(null);
     setTopPrediction(null);
+    setValidationError(null);
 
     try {
       const formData = new FormData();
@@ -135,11 +152,25 @@ export default function App() {
         body: formData,
       });
 
-      if (!response.ok) {
-        throw new Error("Prediction failed");
+      const data = await response.json();
+
+      // Check if response is a validation error
+      if (!response.ok || data.error === "Image is not in scope") {
+        setValidationError({
+          error: data.error || "Prediction failed",
+          message: data.message || "Error al analizar la imagen",
+          validation_confidence: data.validation_confidence,
+          note: data.note
+        });
+        setPredictions(null);
+        setTopPrediction(null);
+        return;
       }
 
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Prediction failed");
+      }
+
       const preds = data.predictions || data;
 
       setPredictions(preds);
@@ -151,7 +182,11 @@ export default function App() {
       }
     } catch (error) {
       console.error("Prediction error:", error);
-      alert("Error al analizar la imagen. Por favor intenta de nuevo.");
+      setValidationError({
+        error: "Error de conexión",
+        message: "Error al analizar la imagen. Por favor intenta de nuevo.",
+        note: error.message
+      });
     } finally {
       setIsLoading(false);
     }
@@ -222,6 +257,50 @@ export default function App() {
         {error && (
           <div className="mb-6 rounded-lg bg-yellow-50 p-4 border border-yellow-200">
             <p className="text-sm text-yellow-800">{error}</p>
+          </div>
+        )}
+
+        {/* Validator Status */}
+        {validatorInfo && (
+          <div className="mb-6 rounded-lg bg-blue-50 p-4 border border-blue-200">
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-blue-900">
+                  ✅ Validación de Imágenes Activa
+                </p>
+                <p className="text-xs text-blue-700 mt-1">
+                  {validatorInfo.description}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Validation Error */}
+        {validationError && (
+          <div className="mb-6 rounded-lg bg-red-50 p-4 border border-red-200">
+            <div className="flex items-start gap-3">
+              <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-red-900">
+                  {validationError.error}
+                </p>
+                <p className="text-sm text-red-700 mt-1">
+                  {validationError.message}
+                </p>
+                {validationError.validation_confidence !== undefined && (
+                  <p className="text-xs text-red-600 mt-2">
+                    Confianza: {(validationError.validation_confidence * 100).toFixed(1)}%
+                  </p>
+                )}
+                {validationError.note && (
+                  <p className="text-xs text-red-600 mt-1 italic">
+                    💡 {validationError.note}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
         )}
         {models && models.length > 0 && (
