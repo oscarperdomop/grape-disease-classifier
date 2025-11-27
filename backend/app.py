@@ -54,6 +54,9 @@ MODEL_DISPLAY_MAP = {
 # Validation model configuration
 VALIDATOR_MODEL_ID = "validator"  # Special model for image validation
 VALIDATOR_MODEL_THRESHOLD = 0.5  # Confidence threshold for accepting as grape leaf
+# NOTE: Validator model is OPTIONAL. If not present, all images are accepted (fail-safe mode)
+# To enable validation, train a model and place it in models/validator/model.onnx
+# See VALIDATOR_MODEL_GUIDE.md and train_validator_simple.py for instructions
 
 # Production environment flag
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
@@ -169,8 +172,9 @@ def validate_grape_leaf(image: Image.Image) -> tuple[bool, float]:
     Returns: (is_valid, confidence)
     """
     if VALIDATOR_MODEL is None:
-        logger.warning("Validator model not loaded, skipping validation")
-        return True, 1.0  # If no validator, accept image
+        logger.warning("⚠️  Validator model not loaded - validation disabled")
+        logger.warning("   To enable validation, add validator model to models/validator/model.onnx")
+        return True, 1.0  # If no validator, accept image (fail-safe)
     
     try:
         H, W = VALIDATOR_MODEL.get("input_shape", (224, 224))
